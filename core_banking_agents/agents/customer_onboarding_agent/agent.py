@@ -7,7 +7,7 @@ import json # For parsing expected outputs if they are JSON strings
 # Assuming schemas are in the same directory
 from .schemas import OnboardingRequest, VerificationStepResult, VerificationStatus, DocumentType
 # Import the defined tools
-from .tools import nin_bvn_verification_tool, ocr_tool, face_match_tool
+from .tools import nin_bvn_verification_tool, ocr_tool, face_match_tool, aml_screening_tool # Added aml_screening_tool
 
 from crewai import Agent, Task, Crew, Process
 # from langchain_openai import ChatOpenAI # Actual LLM
@@ -27,7 +27,7 @@ def get_customer_onboarding_llm(expected_responses: List[str]):
 # Note: Tools are instantiated when creating the agent or tasks.
 # For CrewAI, tools are typically passed to the Agent constructor.
 
-onboarding_tools = [nin_bvn_verification_tool, ocr_tool, face_match_tool]
+onboarding_tools = [nin_bvn_verification_tool, ocr_tool, face_match_tool, aml_screening_tool] # Added aml_screening_tool
 
 # This is a placeholder for expected LLM outputs if we were to run the full crew.
 # The number of responses should match the number of times the LLM is invoked by the agent across all tasks.
@@ -149,11 +149,22 @@ def create_onboarding_tasks(onboarding_request_data: Dict[str, Any], documents: 
         )
         tasks.append(face_match_task)
 
-    # Task 5: AML Screening (Placeholder)
+    # Task 5: AML Screening
     aml_task = Task(
-        description="Perform AML screening for the applicant based on their provided details.",
-        expected_output="JSON string indicating AML check status. Example: {\"aml_status\": \"Clear\", \"risk_rating\": \"Low\"}",
-        agent=customer_onboarding_specialist
+        description=f"""\
+        Perform AML screening for the applicant using their full name, date of birth, and nationality.
+        Applicant Full Name: {onboarding_request_data.get('first_name', '')} {onboarding_request_data.get('middle_name', '') if onboarding_request_data.get('middle_name') else ''} {onboarding_request_data.get('last_name', '')}
+        Date of Birth: {onboarding_request_data.get('date_of_birth')}
+        Nationality: {onboarding_request_data.get('country', 'NG')}
+        Use the AMLScreeningTool.
+        """,
+        expected_output="""\
+        A JSON string with AML screening results.
+        Example: {"status": "Clear", "risk_level": "Low", "details": {"screened_lists": ["Mock Sanctions", ...], "message": "Applicant clear."}}
+        Example on hit: {"status": "Hit", "risk_level": "High", "details": {"hit_details": {"matched_name": "...", "list_name": "...", "reason": "..."}}}
+        """,
+        agent=customer_onboarding_specialist,
+        tools=[aml_screening_tool]
     )
     tasks.append(aml_task)
 

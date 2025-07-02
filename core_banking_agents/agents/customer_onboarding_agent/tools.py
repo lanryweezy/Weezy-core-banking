@@ -355,4 +355,103 @@ if __name__ == "__main__":
     face_match_error_res = face_match_tool(selfie_url=HttpUrl("http://example.com/photos/error_selfie.jpg"), id_photo_url=HttpUrl("http://example.com/photos/some_id.png"))
     print(f"Face Match (Error): {face_match_error_res['status']}, Message: {face_match_error_res.get('error_message')}")
 
-    print("\nCustomer Onboarding Agent tools (NINBVN, OCR, FaceMatch implemented with mocks).")
+
+@tool("AMLScreeningTool")
+def aml_screening_tool(full_name: str, date_of_birth: str, nationality: str) -> Dict[str, Any]:
+    """
+    Simulates an Anti-Money Laundering (AML) screening process for an applicant.
+    Checks against mock sanctions lists, Politically Exposed Persons (PEP) lists, and adverse media.
+
+    Args:
+        full_name (str): The full name of the applicant.
+        date_of_birth (str): The applicant's date of birth (YYYY-MM-DD).
+        nationality (str): The applicant's nationality (e.g., "NG" for Nigerian).
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the screening result:
+                        'status' ("Clear", "Hit", "Error"),
+                        'risk_level' ("Low", "Medium", "High"),
+                        'details' (e.g., list name if a hit, reasons for risk level).
+    """
+    print(f"AMLScreeningTool: Screening '{full_name}', DOB: {date_of_birth}, Nationality: {nationality}")
+
+    # Mock data for sanctioned individuals or PEPs
+    mock_sanctions_list = {
+        "Victor Zakhaev": {"list": "UN Sanctions List", "reason": "Terrorist Financing"},
+        "Serena Kogan": {"list": "OFAC SDN List", "reason": "Financial Crimes"},
+        "John Doe Politician": {"list": "PEP List", "reason": "Domestic PEP"},
+    }
+    mock_high_risk_nationalities = ["SYR", "IRN", "PRK"] # Example
+
+    status = "Clear"
+    risk_level = "Low"
+    details: Dict[str, Any] = {"screened_lists": ["Mock Sanctions", "Mock PEP", "Mock Adverse Media"]}
+
+    if "error_aml" in full_name.lower():
+        return {"status": "Error", "risk_level": "Undetermined", "details": {"message": "Simulated AML service connection error."}}
+
+    for name_on_list, info in mock_sanctions_list.items():
+        if name_on_list.lower() in full_name.lower():
+            status = "Hit"
+            risk_level = "High"
+            details["hit_details"] = {
+                "matched_name": name_on_list,
+                "list_name": info["list"],
+                "reason": info["reason"]
+            }
+            details["message"] = f"Applicant matched on {info['list']}."
+            break # Stop on first critical hit for this mock
+
+    if status == "Clear" and nationality.upper() in mock_high_risk_nationalities:
+        risk_level = "Medium" # Could be High depending on policy
+        details["message"] = f"Applicant nationality ({nationality}) is on a high-risk jurisdiction list."
+        # Status might remain "Clear" from sanctions, but risk level increases.
+
+    if status == "Clear" and "risky business" in full_name.lower(): # Simulate adverse media hit
+        risk_level = "Medium"
+        details["adverse_media_hits"] = ["Found negative news related to 'risky business activities'."]
+        details["message"] = "Potential adverse media found."
+
+
+    return {"status": status, "risk_level": risk_level, "details": details}
+
+
+if __name__ == "__main__":
+    print("--- Testing NINBVNVerificationTool ---")
+    # (Keep existing NINBVNVerificationTool tests)
+    res1 = nin_bvn_verification_tool(bvn="12345678901", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="08012345678")
+    print(f"NINBVN Test 1: {res1['bvn_status']}")
+
+
+    print("\n--- Testing OCRTool ---")
+    # (Keep existing OCRTool tests)
+    ocr_id_res = ocr_tool(document_url=HttpUrl("http://example.com/docs/ogunseye_national_id.jpg"), document_type="NationalID")
+    print(f"OCR NationalID: {ocr_id_res['status']}")
+
+
+    print("\n--- Testing FaceMatchTool ---")
+    # (Keep existing FaceMatchTool tests)
+    face_match_res_good = face_match_tool(selfie_url=HttpUrl("http://example.com/photos/adewale_selfie.jpg"), id_photo_url=HttpUrl("http://example.com/photos/adewale_id_photo.png"))
+    print(f"Face Match (Good): {face_match_res_good['is_match']}")
+
+    print("\n--- Testing AMLScreeningTool ---")
+    aml_clear = aml_screening_tool(full_name="Adaobi Chidinma", date_of_birth="1995-03-10", nationality="NG")
+    print(f"AML Clear: {aml_clear}")
+
+    aml_hit_sanction = aml_screening_tool(full_name="Mr Victor Zakhaev Badman", date_of_birth="1970-01-01", nationality="RU")
+    print(f"AML Hit (Sanction): {aml_hit_sanction}")
+
+    aml_hit_pep = aml_screening_tool(full_name="John Doe Politician", date_of_birth="1965-06-15", nationality="NG")
+    print(f"AML Hit (PEP): {aml_hit_pep}")
+
+    aml_high_risk_nation = aml_screening_tool(full_name="Normal Citizen", date_of_birth="1980-02-02", nationality="SYR")
+    print(f"AML High Risk Nation: {aml_high_risk_nation}")
+
+    aml_adverse_media = aml_screening_tool(full_name="Risky Business Owner", date_of_birth="1975-12-05", nationality="NG")
+    print(f"AML Adverse Media: {aml_adverse_media}")
+
+    aml_error = aml_screening_tool(full_name="Error AML Test", date_of_birth="1990-01-01", nationality="NG")
+    print(f"AML Error: {aml_error}")
+
+
+    print("\nCustomer Onboarding Agent tools (NINBVN, OCR, FaceMatch, AMLScreening implemented with mocks).")
