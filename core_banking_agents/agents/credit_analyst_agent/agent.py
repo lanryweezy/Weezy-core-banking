@@ -1,264 +1,292 @@
 # LangChain/CrewAI agent logic for Credit Analyst Agent
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime, date
 import logging
 import json
 
-# Assuming schemas are in the same directory or accessible via path
-from .schemas import LoanApplicationInput, DocumentProof, LoanAssessmentOutput, DocumentAnalysisResult, CreditBureauReportSummary, RiskAssessmentResult, LoanDecisionType
-# Import the defined tools
+from .schemas import (
+    LoanApplicationInput, DocumentProof, LoanAssessmentOutput,
+    DocumentAnalysisResult, CreditBureauReportSummary, RiskAssessmentResult, LoanDecisionType
+)
 from .tools import document_analysis_tool, credit_scoring_tool, risk_rules_tool
 
-# from crewai import Agent, Task, Crew, Process
-# from langchain_community.llms.fake import FakeListLLM
+from crewai import Agent, Task, Crew, Process
+from langchain_community.llms.fake import FakeListLLM
 # from ..core.config import core_settings
 
 logger = logging.getLogger(__name__)
-
-# --- Agent Definition (Placeholder for CrewAI) ---
-# llm_credit_analyst = FakeListLLM(responses=[
-#     "Okay, I will start by analyzing the submitted documents.",
-#     "Documents analyzed. Now, I will perform credit scoring.",
-#     "Credit scoring complete. Proceeding to apply risk rules.",
-#     "Risk rules applied. Compiling the final assessment."
-# ])
-
-# credit_analyst_tools = [document_analysis_tool, credit_scoring_tool, risk_rules_tool]
-
-# credit_analyst_ai_agent = Agent(
-#     role="AI Credit Analyst",
-#     goal="Assess loan applications by analyzing documents, running credit scores, and applying risk rules to make informed recommendations (Approve, Reject, ConditionalApproval, Refer).",
-#     backstory=(
-#         "A sophisticated AI agent designed to support or automate parts of the loan approval process for a Nigerian bank. "
-#         "It meticulously examines applicant information and financial documents, leverages credit scoring models, "
-#         "and evaluates applications against the bank's risk policies to ensure sound lending decisions."
-#     ),
-#     tools=credit_analyst_tools,
-#     llm=llm_credit_analyst,
-#     verbose=True,
-#     allow_delegation=False, # Typically, this agent follows a structured analytical flow
-# )
-
-# --- Task Definitions (Placeholders for CrewAI) ---
-# def create_credit_analysis_tasks(application_input_json: str) -> List[Task]:
-#     tasks = []
-#     # Task 1: Document Analysis (could be one task or broken down if documents are very different)
-#     doc_analysis_task = Task(
-#         description=f"Analyze all submitted documents for the loan application provided in the JSON input: '{application_input_json}'. Use the DocumentAnalysisTool for each document. Consolidate the findings.",
-#         expected_output="A JSON string containing a list of document analysis results, each with 'document_id', 'status', and 'extracted_data'.",
-#         agent=credit_analyst_ai_agent,
-#         tools=[document_analysis_tool]
-#     )
-#     tasks.append(doc_analysis_task)
-
-#     # Task 2: Credit Scoring (would use context from application_input_json and doc_analysis_task output)
-#     credit_scoring_task = Task(
-#         description=f"Perform credit scoring for the applicant based on their details in '{application_input_json}' and the document analysis results (from previous task). Use the CreditScoringTool.",
-#         expected_output="A JSON string with 'applicant_id', 'credit_score', 'risk_level', and 'assessment_details'.",
-#         agent=credit_analyst_ai_agent,
-#         tools=[credit_scoring_tool],
-#         context=[doc_analysis_task] # Depends on doc_analysis_task
-#     )
-#     tasks.append(credit_scoring_task)
-
-#     # Task 3: Risk Rules Application
-#     risk_rules_task = Task(
-#         description=f"Apply bank's risk rules to the loan application ('{application_input_json}') using the credit scoring results (from previous task). Use the RiskRulesTool.",
-#         expected_output="A JSON string with 'passed_rules', 'failed_rules', and 'overall_risk_assessment_from_rules'.",
-#         agent=credit_analyst_ai_agent,
-#         tools=[risk_rules_tool],
-#         context=[credit_scoring_task] # Depends on credit_scoring_task
-#     )
-#     tasks.append(risk_rules_task)
-
-#     # Task 4: Final Assessment Compilation
-#     final_assessment_compilation_task = Task(
-#         description="Compile all previous results (document analysis, credit score, risk rules) into a comprehensive loan assessment report. Determine a final decision (Approved, Rejected, ConditionalApproval, PendingReview) and provide reasons and any conditions.",
-#         expected_output="A JSON string matching the LoanAssessmentOutput schema, summarizing the entire analysis and final decision.",
-#         agent=credit_analyst_ai_agent,
-#         # This task might not use tools directly but synthesizes information.
-#         context=tasks # Depends on all previous tasks
-#     )
-#     tasks.append(final_assessment_compilation_task)
-#     return tasks
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 
-# --- Main Workflow Function (Direct Tool Usage for now, to be replaced by CrewAI kickoff) ---
+# --- LLM Configuration (Mocked for CrewAI) ---
+# Responses for document analysis, scoring, rules, and final compilation.
+mock_llm_credit_analyst_responses = [
+    "Okay, I will start by analyzing all submitted documents for this loan application using DocumentAnalysisTool for each.", # Doc Analysis Task
+    "Document analysis complete. Now, I will compile a financial summary and perform credit scoring using CreditScoringTool.", # Credit Scoring Task
+    "Credit scoring complete. Proceeding to apply the bank's risk rules using RiskRulesTool.", # Risk Rules Task
+    "All checks (documents, score, rules) are done. Now I will compile the final loan assessment, determine a decision, and provide reasons and conditions." # Final Assessment Task
+] * 2 # Multiply for buffer
+llm_credit_analyst = FakeListLLM(responses=mock_llm_credit_analyst_responses)
 
-async def start_credit_analysis_workflow_async(application_id: str, application_data: LoanApplicationInput) -> Dict[str, Any]:
+# --- Agent Definition ---
+credit_analyst_tools = [document_analysis_tool, credit_scoring_tool, risk_rules_tool]
+
+credit_analyst_ai_agent = Agent(
+    role="AI Credit Analyst",
+    goal="Assess loan applications by analyzing documents, running credit scores, and applying risk rules to make informed recommendations (Approve, Reject, ConditionalApproval, PendingReview).",
+    backstory=(
+        "A sophisticated AI agent designed to support or automate parts of the loan approval process for a Nigerian bank. "
+        "It meticulously examines applicant information and financial documents, leverages credit scoring models, "
+        "and evaluates applications against the bank's risk policies to ensure sound lending decisions."
+    ),
+    tools=credit_analyst_tools,
+    llm=llm_credit_analyst,
+    verbose=1, # Set to 1 or 2 for more details
+    allow_delegation=False,
+)
+
+# --- Task Definitions for CrewAI ---
+def create_credit_analysis_tasks(application_input_dict: Dict[str, Any]) -> List[Task]:
+    tasks: List[Task] = []
+    application_input_json = json.dumps(application_input_dict) # For task descriptions
+
+    # Task 1: Document Analysis
+    # This task might internally loop or call the tool multiple times if the LLM decides to.
+    # Or, a more complex agent setup could have a "document processing manager" agent.
+    # For this setup, we assume the agent given the list of documents will process them.
+    doc_analysis_task = Task(
+        description=f"""\
+        Analyze ALL submitted documents for the loan application provided in this JSON input: '{application_input_json}'.
+        The 'submitted_documents' key contains a list of documents, each with 'file_url' and 'document_category'.
+        For EACH document, use the DocumentAnalysisTool.
+        Consolidate all findings from each document analysis into a single list of results.
+        """,
+        expected_output="""\
+        A JSON string containing a list of document analysis results. Each item in the list should be a dictionary
+        with 'document_id' (from the input document), 'document_category_processed', 'status',
+        'extracted_data' (or 'error_message' if failed).
+        Example: '[{ "document_id": "DOC-XYZ", "document_category_processed": "IncomeProof", "status": "Success", "extracted_data": {...} }, ...]'
+        """,
+        agent=credit_analyst_ai_agent,
+        # tools=[document_analysis_tool] # Agent already has this tool
+    )
+    tasks.append(doc_analysis_task)
+
+    # Task 2: Credit Scoring
+    credit_scoring_task = Task(
+        description=f"""\
+        Perform credit scoring for the applicant.
+        The initial application data is in: '{application_input_json}'.
+        The results of document analysis (from the previous task) will also be available in the context.
+        Compile a 'financial_summary' for the applicant using data from both the application input
+        (e.g., 'applicant_details.monthly_income_ngn') and any relevant 'extracted_data' from the document analysis
+        (e.g., average bank balance, detected salary from bank statements, existing debts from credit reports if available).
+        Then, use the CreditScoringTool with the applicant's ID and this compiled 'financial_summary'.
+        """,
+        expected_output="""\
+        A JSON string containing the credit scoring result:
+        {'applicant_id': ..., 'credit_score': ..., 'risk_level': ..., 'assessment_details': ..., 'model_version': ...}.
+        """,
+        agent=credit_analyst_ai_agent,
+        context_tasks=[doc_analysis_task]
+    )
+    tasks.append(credit_scoring_task)
+
+    # Task 3: Risk Rules Application
+    risk_rules_task = Task(
+        description=f"""\
+        Apply the bank's risk rules to the loan application.
+        The initial application data is in: '{application_input_json}'.
+        The credit scoring results (from the previous task) will be available in the context.
+        Use the RiskRulesTool, passing it the application data and the credit score result.
+        """,
+        expected_output="""\
+        A JSON string detailing the outcome of risk rule checks:
+        {'passed_rules': [...], 'failed_rules': [...], 'overall_risk_assessment_from_rules': ("Accept", "Reject", "Refer"), ...}.
+        """,
+        agent=credit_analyst_ai_agent,
+        context_tasks=[credit_scoring_task]
+    )
+    tasks.append(risk_rules_task)
+
+    # Task 4: Final Assessment Compilation
+    final_assessment_compilation_task = Task(
+        description=f"""\
+        Compile all previous analysis results (document analysis, credit score, risk rules checks)
+        for the loan application originally detailed in '{application_input_json}'.
+        Based on all gathered information, determine a final loan 'decision' (e.g., 'Approved', 'Rejected', 'ConditionalApproval').
+        Provide a 'decision_reason'.
+        If 'Approved' or 'ConditionalApproval', specify 'approved_loan_amount_ngn', 'approved_loan_tenor_months', and 'approved_interest_rate_pa'.
+        If 'ConditionalApproval', list any 'conditions_for_approval'.
+        If more information is needed, set decision to 'InformationRequested' and list 'required_further_documents'.
+        Structure this final assessment to align with the LoanAssessmentOutput schema.
+        The output MUST be a single JSON string representing this comprehensive loan assessment.
+        Include 'application_id', 'assessment_timestamp', and summaries of document analysis, credit bureau (mocked from score), and risk assessment.
+        """,
+        expected_output="A single JSON string that strictly matches the structure of the LoanAssessmentOutput schema.",
+        agent=credit_analyst_ai_agent,
+        context_tasks=[doc_analysis_task, credit_scoring_task, risk_rules_task] # Depends on all previous tasks
+    )
+    tasks.append(final_assessment_compilation_task)
+    return tasks
+
+
+# --- Main Workflow Function (Now using CrewAI structure) ---
+
+async def start_credit_analysis_workflow_async(application_id: str, application_data_model: LoanApplicationInput) -> Dict[str, Any]:
     """
-    Simulates the credit analysis workflow by directly calling tools.
-    This will eventually be replaced by CrewAI agent execution.
+    Simulates the credit analysis workflow using a CrewAI structure.
+    The actual execution of tools and LLM reasoning is mocked.
     """
-    logger.info(f"Agent: Starting credit analysis workflow for application ID: {application_id}")
+    logger.info(f"Agent (CrewAI): Starting credit analysis for application ID: {application_id}")
 
-    # 1. Document Analysis
-    doc_analysis_results_list: List[Dict[str, Any]] = [] # For LoanAssessmentOutput schema
-    all_extracted_doc_data: Dict[str, Any] = {} # To compile for financial summary
+    application_input_dict = application_data_model.model_dump(mode='json') # For CrewAI inputs/task descriptions
 
-    for doc_proof in application_data.submitted_documents:
-        logger.info(f"Agent: Analyzing document '{doc_proof.document_type_name}' (Category: {doc_proof.document_category}) for app ID {application_id}")
-        # tool_input = {"document_url": str(doc_proof.file_url), "document_category": doc_proof.document_category.value} # If DocumentCategory is Enum
-        tool_input = {"document_url": doc_proof.file_url, "document_category": doc_proof.document_category}
+    analysis_tasks = create_credit_analysis_tasks(application_input_dict)
 
-        analysis_result = document_analysis_tool.run(tool_input)
+    credit_analysis_crew = Crew(
+        agents=[credit_analyst_ai_agent],
+        tasks=analysis_tasks,
+        process=Process.sequential,
+        verbose=0 # Set to 1 or 2 for detailed CrewAI logs if using real kickoff
+    )
 
-        doc_analysis_results_list.append({
-            "document_id": doc_proof.document_id,
-            "document_category": analysis_result.get("document_category_processed", doc_proof.document_category),
-            "status": "Processed" if analysis_result.get("status") == "Success" else "ProcessingFailed",
-            "key_extractions": analysis_result.get("extracted_data"),
-            "validation_summary": analysis_result.get("error_message") if analysis_result.get("status") == "Failed" else "Mock document analysis successful."
-        })
-        if analysis_result.get("status") == "Success" and analysis_result.get("extracted_data"):
-            # Merge extracted data, prioritizing more specific sources if conflicts (not handled in this simple merge)
-            all_extracted_doc_data.update(analysis_result.get("extracted_data", {}))
+    # --- ACTUAL CREWAI KICKOFF (Commented out for pure mock, uncomment for FakeListLLM test) ---
+    # logger.info(f"Agent (CrewAI): Kicking off crew for application {application_id}. Inputs: {application_input_dict}")
+    # try:
+    #     # The input dict is passed to the crew; tasks can access it or parts of it via their descriptions or context.
+    #     # For tasks expecting specific JSON strings in description, those are already interpolated.
+    #     crew_result_str = credit_analysis_crew.kickoff(inputs=application_input_dict)
+    #     logger.info(f"Agent (CrewAI): Crew kickoff raw result for app '{application_id}': {crew_result_str[:500]}...")
+    # except Exception as e:
+    #     logger.error(f"Agent (CrewAI): Crew kickoff failed for app '{application_id}': {e}", exc_info=True)
+    #     # Fallback to a basic error structure if kickoff fails
+    #     crew_result_str = json.dumps({
+    #         "application_id": application_id, "decision": "PendingReview", # type: ignore
+    #         "decision_reason": f"Agent workflow execution error: {str(e)}",
+    #         "assessment_timestamp": datetime.utcnow().isoformat()
+    #     })
+    # --- END ACTUAL CREWAI KICKOFF ---
 
-    logger.info(f"Agent: Document analysis phase complete for {application_id}. Results: {len(doc_analysis_results_list)} documents processed.")
+    # --- MOCKING CREW EXECUTION (Simulating the final task's output string) ---
+    if True: # Keep this block for controlled mocking until LLM is fully active
+        logger.warning(f"Agent (CrewAI): Using MOCKED CrewAI execution path for application {application_id}.")
 
-    # 2. Compile Financial Summary (Simplified)
-    # In a real system, this would be more sophisticated, reconciling data from multiple sources.
-    financial_summary = {
-        "monthly_income_ngn": application_data.applicant_details.monthly_income_ngn or all_extracted_doc_data.get("net_monthly_pay_ngn", 0),
-        "total_existing_debt_ngn": all_extracted_doc_data.get("total_outstanding_debt_ngn", random.uniform(0, 500000)), # Mocked existing debt
-        "credit_history_length_months": all_extracted_doc_data.get("credit_history_length_months", random.randint(6, 60)), # Mocked
-        "bureau_score_if_any": all_extracted_doc_data.get("bureau_score", None) # If a tool provided this
-    }
-    # Add any other relevant fields from application_data or all_extracted_doc_data
-    financial_summary["applicant_id"] = application_data.applicant_details.applicant_id or application_id
+        # Simulate the sequence of tool calls the agent would make based on tasks
+        doc_analysis_results_list = []
+        all_extracted_doc_data = {}
+        for doc_proof_dict in application_input_dict.get("submitted_documents", []):
+            analysis_result = document_analysis_tool.run({
+                "document_url": doc_proof_dict["file_url"],
+                "document_category": doc_proof_dict["document_category"]
+            })
+            doc_analysis_results_list.append({
+                "document_id": doc_proof_dict["document_id"],
+                "document_category": analysis_result.get("document_category_processed", doc_proof_dict["document_category"]),
+                "status": "Processed" if analysis_result.get("status") == "Success" else "ProcessingFailed",
+                "key_extractions": analysis_result.get("extracted_data"),
+                "validation_summary": analysis_result.get("error_message") # or a success message
+            })
+            if analysis_result.get("status") == "Success":
+                all_extracted_doc_data.update(analysis_result.get("extracted_data", {}))
 
-    logger.info(f"Agent: Compiled financial summary for {application_id}: {financial_summary}")
+        financial_summary = {
+            "monthly_income_ngn": application_input_dict.get("applicant_details",{}).get("monthly_income_ngn") or all_extracted_doc_data.get("net_monthly_pay_ngn", 0),
+            "total_existing_debt_ngn": all_extracted_doc_data.get("total_outstanding_debt_ngn", random.uniform(0,100000)),
+            "applicant_id": application_input_dict.get("applicant_details",{}).get("applicant_id") or application_id
+        }
+        credit_score_result = credit_scoring_tool.run({"applicant_id": financial_summary["applicant_id"], "financial_summary": financial_summary})
 
-    # 3. Credit Scoring
-    logger.info(f"Agent: Performing credit scoring for {application_id}")
-    credit_score_input = {"applicant_id": financial_summary["applicant_id"], "financial_summary": financial_summary}
-    credit_score_result = credit_scoring_tool.run(credit_score_input)
-    logger.info(f"Agent: Credit scoring complete for {application_id}. Score: {credit_score_result.get('credit_score')}, Risk: {credit_score_result.get('risk_level')}")
+        risk_rules_result = risk_rules_tool.run({"application_data": application_input_dict, "credit_score_result": credit_score_result})
 
-    # Prepare CreditBureauReportSummary for output (mocked from credit score result)
-    mock_bureau_summary = CreditBureauReportSummary(
-        bureau_name="Mock Combined Bureau",
-        credit_score=credit_score_result.get("credit_score"),
-        summary_narrative=credit_score_result.get("assessment_details")
-    ).model_dump()
+        # Mock consolidation by the final task
+        mock_final_assessment_dict = {
+            "application_id": application_id,
+            "assessment_id": f"ASSESS-MOCK-{uuid.uuid4().hex[:6].upper()}",
+            "assessment_timestamp": datetime.utcnow().isoformat(),
+            "decision": risk_rules_result.get("overall_risk_assessment_from_rules", "PendingReview").capitalize(), # Align with LoanDecisionType
+            "decision_reason": f"Mock assessment based on rules: {risk_rules_result.get('overall_risk_assessment_from_rules')}. Score: {credit_score_result.get('credit_score')}",
+            "approved_loan_amount_ngn": application_input_dict.get("loan_amount_requested_ngn") if risk_rules_result.get("overall_risk_assessment_from_rules") == "Accept" else None,
+            "approved_loan_tenor_months": application_input_dict.get("requested_loan_tenor_months") if risk_rules_result.get("overall_risk_assessment_from_rules") == "Accept" else None,
+            "approved_interest_rate_pa": 21.75 if risk_rules_result.get("overall_risk_assessment_from_rules") == "Accept" else None,
+            "conditions_for_approval": ["Mock condition: verify address again."] if risk_rules_result.get("overall_risk_assessment_from_rules") == "Refer" else None,
+            "document_analysis_summary": doc_analysis_results_list,
+            "credit_bureau_summary": {"bureau_name": "Mock Bureau via Scoring", "credit_score": credit_score_result.get("credit_score"), "summary_narrative": credit_score_result.get("assessment_details"), "report_date": date.today().isoformat()},
+            "risk_assessment_summary": {"overall_risk_rating": credit_score_result.get("risk_level", "Medium").capitalize(), "key_risk_factors": risk_rules_result.get("failed_rules")}
+        }
+        # Adjust decision for Pydantic Literal
+        if mock_final_assessment_dict["decision"] == "Accept": mock_final_assessment_dict["decision"] = "Approved"
+        if mock_final_assessment_dict["decision"] == "Refer": mock_final_assessment_dict["decision"] = "ConditionalApproval"
 
+        crew_result_str = json.dumps(mock_final_assessment_dict)
+        logger.info(f"Agent (CrewAI): Mocked final JSON output for app '{application_id}': {crew_result_str[:500]}...")
+    # --- END MOCKING CREW EXECUTION ---
 
-    # 4. Risk Rules Application
-    logger.info(f"Agent: Applying risk rules for {application_id}")
-    # Pass application_data as dict and credit_score_result as dict
-    risk_rules_input = {"application_data": application_data.model_dump(), "credit_score_result": credit_score_result}
-    risk_rules_result = risk_rules_tool.run(risk_rules_input)
-    logger.info(f"Agent: Risk rules application complete for {application_id}. Assessment: {risk_rules_result.get('overall_risk_assessment_from_rules')}")
+    try:
+        # The final output of a CrewAI task is a string, expected to be JSON here.
+        final_assessment_dict_from_crew = json.loads(crew_result_str)
+    except json.JSONDecodeError:
+        logger.error(f"Agent (CrewAI): Error decoding JSON result for app '{application_id}': {crew_result_str}", exc_info=True)
+        return { # Return a structure that can inform main.py of an error
+            "application_id": application_id, "decision": "PendingReview",
+            "decision_reason": "Agent returned malformed assessment (not JSON). Requires manual check.",
+            "assessment_timestamp": datetime.utcnow().isoformat() # Ensure this is present
+        }
+    except TypeError: # If crew_result_str is None
+        logger.error(f"Agent (CrewAI): Crew returned None or non-string result for app '{application_id}'.", exc_info=True)
+        return {
+            "application_id": application_id, "decision": "PendingReview",
+            "decision_reason": "Agent workflow returned unexpected data type. Requires manual check.",
+            "assessment_timestamp": datetime.utcnow().isoformat()
+        }
 
-    # Prepare RiskAssessmentResult for output
-    mock_risk_assessment = RiskAssessmentResult(
-        overall_risk_rating=credit_score_result.get("risk_level", "Medium"), # type: ignore # Use score's risk level or rules'
-        key_risk_factors=risk_rules_result.get("failed_rules", [])
-    ).model_dump()
-    if risk_rules_result.get("overall_risk_assessment_from_rules") == "Reject":
-        mock_risk_assessment["overall_risk_rating"] = "High" # Override if rules dictate rejection
+    # Ensure the returned dictionary is compatible with LoanAssessmentOutput schema for FastAPI
+    # The mock_final_assessment_dict is already structured like LoanAssessmentOutput.
+    return final_assessment_dict_from_crew
 
-
-    # 5. Compile Final Assessment (into LoanAssessmentOutput structure)
-    logger.info(f"Agent: Compiling final assessment for {application_id}")
-
-    final_decision: LoanDecisionType = "PendingReview" # type: ignore
-    decision_reason = "Further review required by credit officer."
-    approved_amount = None
-    approved_tenor = None
-    approved_rate = None
-    conditions: Optional[List[str]] = None
-
-    rules_assessment = risk_rules_result.get("overall_risk_assessment_from_rules")
-    applicant_score = credit_score_result.get("credit_score", 0)
-
-    if rules_assessment == "Accept":
-        final_decision = "Approved" # type: ignore
-        decision_reason = "Application meets all automated credit criteria."
-        approved_amount = application_data.loan_amount_requested_ngn # Mock: approve full amount
-        approved_tenor = application_data.requested_loan_tenor_months
-        approved_rate = 20.0 + random.uniform(-2.0, 2.0) # Mock rate
-    elif rules_assessment == "Reject":
-        final_decision = "Rejected" # type: ignore
-        decision_reason = f"Application did not meet critical risk rules. Failed rules: {', '.join(risk_rules_result.get('failed_rules',[]))}"
-    elif rules_assessment == "Refer":
-        final_decision = "ConditionalApproval" # type: ignore # Or "PendingReview" / "InformationRequested"
-        decision_reason = f"Application requires manual review due to rule flags: {', '.join(risk_rules_result.get('failed_rules',[]))}. Possible conditional approval."
-        # Example condition
-        if "DTIRatio" in str(risk_rules_result.get("failed_rules",[])):
-            conditions = ["Reduce loan amount or provide proof of additional income."]
-        elif applicant_score < 650 : # Example for conditional
-             conditions = ["Provide suitable guarantor or collateral."]
-        approved_amount = application_data.loan_amount_requested_ngn * 0.8 # Offer less
-        approved_tenor = application_data.requested_loan_tenor_months
-        approved_rate = 22.5 + random.uniform(-1.0, 3.0)
-
-
-    assessment_output_dict = {
-        "application_id": application_id,
-        # assessment_id is auto-generated by Pydantic model default_factory
-        "assessment_timestamp": datetime.utcnow(),
-        "decision": final_decision,
-        "decision_reason": decision_reason,
-        "approved_loan_amount_ngn": approved_amount,
-        "approved_loan_tenor_months": approved_tenor,
-        "approved_interest_rate_pa": round(approved_rate,2) if approved_rate else None,
-        "conditions_for_approval": conditions,
-        "document_analysis_summary": [DocumentAnalysisResult(**das).model_dump() for das in doc_analysis_results_list], # Parse to ensure schema match
-        "credit_bureau_summary": mock_bureau_summary, # Already a dict
-        "risk_assessment_summary": mock_risk_assessment, # Already a dict
-    }
-
-    logger.info(f"Agent: Final assessment compiled for {application_id}. Decision: {final_decision}")
-    # This dictionary structure should be compatible with LoanAssessmentOutput for FastAPI response
-    return assessment_output_dict
-
-
-# Placeholder for getting status if workflow was truly async and stateful via agent memory
-# async def get_loan_assessment_from_workflow(application_id: str) -> Optional[Dict[str, Any]]:
-#    logger.info(f"Agent: Requesting status for application {application_id} (mocked).")
-#    # This would query a persistent store updated by the agent/crew.
-#    return MOCK_LOAN_APPLICATIONS_DB.get(application_id) # Example if agent updated a shared dict
 
 if __name__ == "__main__":
     import asyncio
     from .schemas import ApplicantInformation # For constructing test input
 
-    async def test_credit_analyst_workflow():
-        print("--- Testing Credit Analyst Agent Workflow (Direct Tool Usage) ---")
+    async def test_credit_analyst_crew_workflow():
+        print("--- Testing Credit Analyst Agent Workflow (Simulated CrewAI) ---")
 
         test_app_data = LoanApplicationInput(
+            # application_id will be auto-generated by Pydantic default_factory
             applicant_details=ApplicantInformation(
-                first_name="Test", last_name="Applicant", date_of_birth=date(1985, 1, 1),
-                email="test.applicant@example.com", phone_number="08012345670",
-                bvn="12312312312", current_address="1 Test Street, Lagos",
-                employment_status="FullTime", monthly_income_ngn=600000.00
+                first_name="CrewTest", last_name="ApplicantCA", date_of_birth=date(1990, 3, 15),
+                email="crew.test.ca@example.com", phone_number="08099887766",
+                bvn="33445566778", current_address="10 Agent Avenue, Lagos",
+                employment_status="SelfEmployed", monthly_income_ngn=850000.00
             ),
-            loan_amount_requested_ngn=500000.00,
-            loan_purpose="PersonalUse",
-            requested_loan_tenor_months=12,
+            loan_amount_requested_ngn=1200000.00,
+            loan_purpose="BusinessExpansion",
+            requested_loan_tenor_months=18,
             submitted_documents=[
-                DocumentProof(document_type_name="Payslip July", document_category="IncomeProof", file_url=HttpUrl("http://example.com/payslip.pdf")),
-                DocumentProof(document_type_name="National ID Front", document_category="Identification", file_url=HttpUrl("http://example.com/national_id.jpg")),
-                DocumentProof(document_type_name="6M Bank Statement", document_category="BankStatement", file_url=HttpUrl("http://example.com/statement.pdf"))
+                DocumentProof(document_type_name="CAC Docs", document_category="BusinessDocument", file_url=HttpUrl("http://example.com/cac.pdf")),
+                DocumentProof(document_type_name="Bank Statement Last 6M", document_category="BankStatement", file_url=HttpUrl("http://example.com/statement_biz.pdf")),
+                DocumentProof(document_type_name="Driver's License", document_category="Identification", file_url=HttpUrl("http://example.com/dl_crew.jpg"))
             ]
         )
-        test_app_id = test_app_data.application_id
+        test_app_id_for_agent = test_app_data.application_id # Get the auto-generated ID
 
-        print(f"\nTesting with Application ID: {test_app_id}")
-        assessment_result = await start_credit_analysis_workflow_async(test_app_id, test_app_data)
+        print(f"\nTesting with Application ID: {test_app_id_for_agent}")
+        assessment_result_dict = await start_credit_analysis_workflow_async(test_app_id_for_agent, test_app_data)
 
-        print("\n--- Final Assessment Result from Agent Workflow ---")
-        print(json.dumps(assessment_result, indent=2, default=str)) # Use default=str for datetime/date
+        print("\n--- Final Assessment Result from Agent Workflow (Simulated CrewAI) ---")
+        print(json.dumps(assessment_result_dict, indent=2, default=str))
 
         # Validate if it can be parsed by LoanAssessmentOutput
         try:
-            parsed_output = LoanAssessmentOutput(**assessment_result)
+            parsed_output = LoanAssessmentOutput(**assessment_result_dict)
             print("\nSuccessfully parsed agent output into LoanAssessmentOutput schema.")
             # print(parsed_output.model_dump_json(indent=2))
         except Exception as e:
             print(f"\nError parsing agent output into LoanAssessmentOutput schema: {e}")
 
-    # asyncio.run(test_credit_analyst_workflow())
-    print("Credit Analyst Agent logic (agent.py). Contains workflow to analyze loan applications using tools (mocked execution).")
+    # To run tests:
+    # logging.basicConfig(level=logging.DEBUG) # For more verbose logs
+    # asyncio.run(test_credit_analyst_crew_workflow())
+    print("Credit Analyst Agent logic (agent.py) updated with CrewAI Agent and Task structure (simulated CrewAI kickoff, direct tool calls for mock output).")

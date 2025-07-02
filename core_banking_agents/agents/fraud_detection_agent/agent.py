@@ -5,232 +5,229 @@ from datetime import datetime
 import logging
 import json
 
-# Assuming schemas are in the same directory or accessible via path
 from .schemas import TransactionEventInput, FraudAnalysisOutput, FraudRuleMatch, RiskLevel, FraudActionRecommended
-# Import the defined tools
 from .tools import transaction_profile_tool, rule_engine_tool, anomaly_detection_tool
 
-# from crewai import Agent, Task, Crew, Process
-# from langchain_community.llms.fake import FakeListLLM
+from crewai import Agent, Task, Crew, Process
+from langchain_community.llms.fake import FakeListLLM
 # from ..core.config import core_settings
 
 logger = logging.getLogger(__name__)
-
-# --- Agent Definition (Placeholder for CrewAI) ---
-# llm_fraud_detector = FakeListLLM(responses=[
-#     "Okay, I will analyze this transaction for potential fraud.",
-#     "First, I'll fetch the customer's transaction profile.",
-#     "Next, I'll apply the rule engine to the transaction and profile.",
-#     "Then, I'll get an anomaly score from the ML model.",
-#     "Finally, I will consolidate all findings and determine a fraud score and recommendation."
-# ])
-
-# fraud_detection_tools = [transaction_profile_tool, rule_engine_tool, anomaly_detection_tool]
-
-# fraud_detector_agent = Agent(
-#     role="AI Fraud Detection Analyst",
-#     goal="Proactively identify and assess fraudulent transactions by analyzing transaction events, customer profiles, applying rules, and using anomaly detection models. Provide a clear fraud score, risk level, and recommended action.",
-#     backstory=(
-#         "A vigilant AI system dedicated to safeguarding the bank and its customers from financial fraud. "
-#         "It processes transaction events in near real-time, correlating them with historical customer behavior, "
-#         "checking against known fraud patterns and rules, and leveraging machine learning to detect subtle anomalies. "
-#         "Its analysis results in actionable insights for fraud prevention and mitigation."
-#     ),
-#     tools=fraud_detection_tools,
-#     llm=llm_fraud_detector,
-#     verbose=True,
-#     allow_delegation=False,
-# )
-
-# --- Task Definitions (Placeholders for CrewAI) ---
-# def create_fraud_analysis_tasks(transaction_event_json: str) -> List[Task]:
-#     tasks = []
-#     # Task 1: Profile Fetching
-#     profile_task = Task(
-#         description=f"Fetch the transaction profile for the customer/account associated with the transaction event: '{transaction_event_json}'. Use TransactionProfileTool.",
-#         expected_output="JSON string containing the customer's transaction profile or an indication if no profile was found.",
-#         agent=fraud_detector_agent, tools=[transaction_profile_tool]
-#     )
-#     tasks.append(profile_task)
-
-#     # Task 2: Rule Engine Application
-#     rules_task = Task(
-#         description=f"Apply fraud rules to the transaction event: '{transaction_event_json}', using the customer profile obtained from the previous task. Use RuleEngineTool.",
-#         expected_output="JSON string listing all triggered fraud rules and their details.",
-#         agent=fraud_detector_agent, tools=[rule_engine_tool], context_tasks=[profile_task]
-#     )
-#     tasks.append(rules_task)
-
-#     # Task 3: Anomaly Detection
-#     anomaly_task = Task(
-#         description=f"Calculate an anomaly score for the transaction event: '{transaction_event_json}', using the customer profile. Use AnomalyDetectionTool.",
-#         expected_output="JSON string containing the anomaly score and contributing factors.",
-#         agent=fraud_detector_agent, tools=[anomaly_detection_tool], context_tasks=[profile_task]
-#     )
-#     tasks.append(anomaly_task)
-
-#     # Task 4: Final Fraud Assessment (Consolidation)
-#     assessment_task = Task(
-#         description="Consolidate results from profile fetching, rule engine, and anomaly detection. Calculate an overall fraud score. Determine the risk level (Low, Medium, High, Critical) and recommend an action (Allow, FlagForReview, BlockTransaction, SuspendAccount).",
-#         expected_output="JSON string matching the FraudAnalysisOutput schema, detailing the comprehensive fraud assessment.",
-#         agent=fraud_detector_agent, context_tasks=[profile_task, rules_task, anomaly_task]
-#     )
-#     tasks.append(assessment_task)
-#     return tasks
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 
-# --- Main Workflow Function (Direct Tool Usage for now, to be replaced by CrewAI kickoff) ---
+# --- LLM Configuration (Mocked for CrewAI) ---
+mock_llm_fraud_responses = [
+    "Okay, I need to analyze this transaction for fraud. First, I'll get the customer's profile.", # Profile Task
+    "Profile fetched. Now, I'll apply fraud rules.", # Rule Engine Task
+    "Rules applied. Next, I'll get the anomaly detection score.", # Anomaly Detection Task
+    "All data gathered. I will now consolidate to give a final fraud assessment, score, and recommendation." # Final Assessment Task
+] * 2
+llm_fraud_detector = FakeListLLM(responses=mock_llm_fraud_responses)
 
-async def analyze_transaction_for_fraud_async(event_data: TransactionEventInput) -> Dict[str, Any]:
+# --- Agent Definition ---
+fraud_detection_tools = [transaction_profile_tool, rule_engine_tool, anomaly_detection_tool]
+
+fraud_detector_agent = Agent(
+    role="AI Fraud Detection Analyst",
+    goal="Proactively identify and assess fraudulent transactions by analyzing transaction events, customer profiles, applying rules, and using anomaly detection models. Provide a clear fraud score, risk level, and recommended action.",
+    backstory=(
+        "A vigilant AI system dedicated to safeguarding the bank and its customers from financial fraud. "
+        "It processes transaction events in near real-time, correlating them with historical customer behavior, "
+        "checking against known fraud patterns and rules, and leveraging machine learning to detect subtle anomalies. "
+        "Its analysis results in actionable insights for fraud prevention and mitigation."
+    ),
+    tools=fraud_detection_tools,
+    llm=llm_fraud_detector,
+    verbose=1,
+    allow_delegation=False,
+)
+
+# --- Task Definitions for CrewAI ---
+def create_fraud_analysis_tasks(transaction_event_dict: Dict[str, Any]) -> List[Task]:
+    tasks: List[Task] = []
+    transaction_event_json_str = json.dumps(transaction_event_dict) # For use in task descriptions
+
+    # Task 1: Profile Fetching
+    profile_task = Task(
+        description=f"""\
+        Fetch the transaction profile for the customer/account associated with the transaction event.
+        Transaction Event (JSON string): '{transaction_event_json_str}'.
+        Extract 'customer_id' and 'account_number' from the event to pass to the TransactionProfileTool.
+        """,
+        expected_output="A JSON string from TransactionProfileTool: {'status': ..., 'profile_found': ..., 'profile_data': {...}}.",
+        agent=fraud_detector_agent,
+    )
+    tasks.append(profile_task)
+
+    # Task 2: Rule Engine Application
+    rules_task = Task(
+        description=f"""\
+        Apply fraud rules to the transaction event: '{transaction_event_json_str}'.
+        Use the customer profile obtained from the previous task (output of profile_task) as context.
+        Pass the transaction event and customer profile to the RuleEngineTool.
+        """,
+        expected_output="A JSON string from RuleEngineTool: {'triggered_rules': [{'rule_id': ..., 'name': ..., 'score_impact': ...}, ...]}",
+        agent=fraud_detector_agent,
+        context_tasks=[profile_task] # Depends on profile_task
+    )
+    tasks.append(rules_task)
+
+    # Task 3: Anomaly Detection
+    anomaly_task = Task(
+        description=f"""\
+        Calculate an anomaly score for the transaction event: '{transaction_event_json_str}'.
+        Use the customer profile obtained from profile_task as context.
+        Pass the transaction event and customer profile to the AnomalyDetectionTool.
+        """,
+        expected_output="A JSON string from AnomalyDetectionTool: {'anomaly_score': ..., 'contributing_factors': [...], 'model_version': ...}",
+        agent=fraud_detector_agent,
+        context_tasks=[profile_task] # Depends on profile_task
+    )
+    tasks.append(anomaly_task)
+
+    # Task 4: Final Fraud Assessment (Consolidation)
+    assessment_task = Task(
+        description=f"""\
+        Consolidate all findings: customer profile (from profile_task), triggered rules (from rules_task),
+        and anomaly detection results (from anomaly_task) for the transaction event: '{transaction_event_json_str}'.
+        Calculate an overall 'fraud_score' (0-100).
+        Determine a 'risk_level' (Low, Medium, High, Critical).
+        Recommend an 'action' (Allow, FlagForReview, BlockTransaction, SuspendAccount).
+        Provide a 'reason_for_action'.
+        The final output MUST be a single JSON string that includes:
+        'event_id', 'fraud_score', 'risk_level', 'triggered_rules' (list of dicts),
+        'anomaly_details' (list of strings), 'recommended_action', 'reason_for_action', and 'status' ('Completed').
+        This structure should align with the FraudAnalysisOutput schema.
+        """,
+        expected_output="A single JSON string structured like the FraudAnalysisOutput schema, summarizing the comprehensive fraud assessment.",
+        agent=fraud_detector_agent,
+        context_tasks=[profile_task, rules_task, anomaly_task] # Depends on all previous tasks
+    )
+    tasks.append(assessment_task)
+    return tasks
+
+
+# --- Main Workflow Function (Now using CrewAI structure) ---
+
+async def analyze_transaction_for_fraud_async(event_data_model: TransactionEventInput) -> Dict[str, Any]:
     """
-    Simulates the fraud detection workflow by directly calling tools.
-    This will eventually be replaced by CrewAI agent execution.
+    Analyzes a transaction event for fraud using a CrewAI agent and tasks.
+    The actual execution of tools and LLM reasoning is mocked.
     """
-    logger.info(f"Agent: Starting fraud analysis for event ID: {event_data.event_id}, Transaction ID: {event_data.transaction_id}")
-    event_dict = event_data.model_dump(mode='json') # Ensure datetime and other types are JSON serializable for tools if needed
+    event_id = event_data_model.event_id
+    logger.info(f"Agent (CrewAI): Starting fraud analysis for event ID: {event_id}, Transaction ID: {event_data_model.transaction_id}")
 
-    # 1. Fetch Customer/Account Profile
-    logger.info(f"Agent: Fetching transaction profile for customer '{event_data.customer_id}' / account '{event_data.account_number}'.")
-    profile_result = transaction_profile_tool.run({
-        "customer_id": event_data.customer_id,
-        "account_number": event_data.account_number
-    })
-    customer_profile_data = profile_result.get("profile_data", {}) if profile_result.get("status") == "Success" else {}
-    logger.info(f"Agent: Profile fetched. Profile found: {profile_result.get('profile_found', False)}")
+    event_data_dict = event_data_model.model_dump(mode='json') # For CrewAI inputs/task descriptions
 
-    # 2. Apply Rule Engine
-    logger.info(f"Agent: Applying rule engine to transaction.")
-    rules_result = rule_engine_tool.run({
-        "transaction_event": event_dict,
-        "customer_profile": {"profile_data": customer_profile_data} # Pass the nested structure if tool expects it
-    })
-    triggered_rules_raw = rules_result.get("triggered_rules", [])
-    # Convert to FraudRuleMatch Pydantic models for structured output
-    triggered_rules_objects: List[Dict[str, Any]] = [
-        FraudRuleMatch(**rule).model_dump() for rule in triggered_rules_raw
-    ]
-    logger.info(f"Agent: Rule engine applied. {len(triggered_rules_objects)} rules triggered.")
+    analysis_tasks = create_fraud_analysis_tasks(event_data_dict)
 
-    # 3. Anomaly Detection
-    logger.info(f"Agent: Performing anomaly detection.")
-    anomaly_result = anomaly_detection_tool.run({
-        "transaction_event": event_dict,
-        "customer_profile": {"profile_data": customer_profile_data}
-    })
-    anomaly_score = anomaly_result.get("anomaly_score", 0.0)
-    anomaly_factors = anomaly_result.get("contributing_factors", [])
-    logger.info(f"Agent: Anomaly detection complete. Score: {anomaly_score:.3f}")
+    fraud_analysis_crew = Crew(
+        agents=[fraud_detector_agent],
+        tasks=analysis_tasks,
+        process=Process.sequential,
+        verbose=0 # 1 or 2 for more detailed logs if using real kickoff
+    )
 
-    # 4. Combine Results and Score (Simplified Scoring Logic)
-    base_score = 0.0
-    # Add impact from rules
-    for rule in triggered_rules_objects:
-        base_score += rule.get("score_impact", 0)
+    # --- ACTUAL CREWAI KICKOFF (Commented out for pure mock) ---
+    # logger.info(f"Agent (CrewAI): Kicking off crew for fraud analysis of event {event_id}. Inputs: {event_data_dict}")
+    # try:
+    #     # The input dict is passed to the crew; tasks can access it via their descriptions or context.
+    #     crew_result_str = fraud_analysis_crew.kickoff(inputs=event_data_dict)
+    #     logger.info(f"Agent (CrewAI): Crew kickoff raw result for event '{event_id}': {crew_result_str[:500]}...")
+    # except Exception as e:
+    #     logger.error(f"Agent (CrewAI): Crew kickoff failed for event '{event_id}': {e}", exc_info=True)
+    #     crew_result_str = json.dumps({
+    #         "event_id": event_id, "status": "FailedToAnalyze", # type: ignore
+    #         "reason_for_action": f"Agent workflow execution error: {str(e)}"
+    #     })
+    # --- END ACTUAL CREWAI KICKOFF ---
 
-    # Factor in anomaly score (e.g., scale it to 0-60 range and add)
-    # Anomaly score is 0-1. If high (e.g., >0.7), it's very significant.
-    if anomaly_score > 0.75:
-        base_score += 40
-    elif anomaly_score > 0.5:
-        base_score += 20
-    elif anomaly_score > 0.25:
-        base_score += 10
+    # --- MOCKING CREW EXECUTION (Simulating the final task's output string) ---
+    if True: # Keep this block for controlled mocking until LLM is fully active
+        logger.warning(f"Agent (CrewAI): Using MOCKED CrewAI execution path for event {event_id}.")
 
-    final_fraud_score = min(max(base_score, 0), 100) # Cap score between 0 and 100
+        # Simulate the sequence of tool calls the agent would make
+        profile_res = transaction_profile_tool.run({"customer_id": event_data_model.customer_id, "account_number": event_data_model.account_number})
+        customer_profile = profile_res if profile_res.get("status") == "Success" else {"profile_data": {}} # Ensure profile_data key exists
 
-    # Determine Risk Level and Recommended Action
-    risk_level: RiskLevel = "Low" # type: ignore
-    recommended_action: FraudActionRecommended = "Allow" # type: ignore
-    reason_for_action = "Transaction appears normal."
+        rules_res = rule_engine_tool.run({"transaction_event": event_data_dict, "customer_profile": customer_profile})
+        triggered_rules_raw = rules_res.get("triggered_rules", [])
 
-    if final_fraud_score >= 80:
-        risk_level = "Critical" # type: ignore
-        recommended_action = "BlockTransaction" # type: ignore
-        reason_for_action = "Critical fraud score due to multiple high-risk indicators."
-    elif final_fraud_score >= 60:
-        risk_level = "High" # type: ignore
-        recommended_action = "BlockTransaction" # type: ignore
-        reason_for_action = "High fraud score indicating significant risk."
-    elif final_fraud_score >= 40:
-        risk_level = "Medium" # type: ignore
-        recommended_action = "FlagForReview" # type: ignore
-        reason_for_action = "Medium fraud score warrants further review."
-    elif final_fraud_score >= 20:
-        risk_level = "Low" # type: ignore
-        recommended_action = "Allow" # type: ignore
-        reason_for_action = "Low fraud score, transaction appears to be low risk."
+        anomaly_res = anomaly_detection_tool.run({"transaction_event": event_data_dict, "customer_profile": customer_profile})
+        anomaly_score = anomaly_res.get("anomaly_score", 0.0)
+        anomaly_factors = anomaly_res.get("contributing_factors", [])
 
-    if not triggered_rules_objects and anomaly_score < 0.2:
-        reason_for_action = "No specific rules triggered and low anomaly score."
+        # Mock consolidation logic from the final task
+        base_score = sum(rule.get("score_impact", 0) for rule in triggered_rules_raw)
+        if anomaly_score > 0.75: base_score += 40
+        elif anomaly_score > 0.5: base_score += 20
+        elif anomaly_score > 0.25: base_score += 10
+        final_fraud_score = min(max(base_score, 0), 100)
 
+        risk_level_val: RiskLevel = "Low" # type: ignore
+        recommended_action_val: FraudActionRecommended = "Allow" # type: ignore
+        reason = "Transaction appears normal (mocked consolidation)."
+        if final_fraud_score >= 80: risk_level_val, recommended_action_val, reason = "Critical", "BlockTransaction", "Critical fraud score from multiple indicators." # type: ignore
+        elif final_fraud_score >= 60: risk_level_val, recommended_action_val, reason = "High", "BlockTransaction", "High fraud score." # type: ignore
+        elif final_fraud_score >= 40: risk_level_val, recommended_action_val, reason = "Medium", "FlagForReview", "Medium fraud score, requires review." # type: ignore
 
-    logger.info(f"Agent: Final assessment for event {event_data.event_id} - Score: {final_fraud_score}, Risk: {risk_level}, Action: {recommended_action}")
+        mock_final_assessment_dict = {
+            "event_id": event_id, "analysis_timestamp": datetime.utcnow().isoformat(),
+            "fraud_score": final_fraud_score, "risk_level": risk_level_val,
+            "triggered_rules": [FraudRuleMatch(**r).model_dump() for r in triggered_rules_raw], # Ensure schema match
+            "anomaly_details": anomaly_factors,
+            "recommended_action": recommended_action_val, "reason_for_action": reason,
+            "status": "Completed" # type: ignore
+        }
+        crew_result_str = json.dumps(mock_final_assessment_dict)
+        logger.info(f"Agent (CrewAI): Mocked final JSON output for event '{event_id}': {crew_result_str[:500]}...")
+    # --- END MOCKING CREW EXECUTION ---
 
-    # Compile into FraudAnalysisOutput structure (as a dictionary)
-    analysis_output_dict = {
-        "event_id": event_data.event_id,
-        # analysis_id and analysis_timestamp will be set by Pydantic model default_factory
-        "fraud_score": final_fraud_score,
-        "risk_level": risk_level,
-        "triggered_rules": triggered_rules_objects, # List of dicts
-        "anomaly_details": anomaly_factors,
-        "recommended_action": recommended_action,
-        "reason_for_action": reason_for_action,
-        "status": "Completed" # type: ignore
-    }
+    try:
+        # The final output of a CrewAI task is a string, expected to be JSON here.
+        final_analysis_dict_from_crew = json.loads(crew_result_str)
+    except json.JSONDecodeError:
+        logger.error(f"Agent (CrewAI): Error decoding JSON result for event '{event_id}': {crew_result_str}", exc_info=True)
+        return { "event_id": event_id, "status": "FailedToAnalyze", "reason_for_action": "Agent returned malformed analysis (not JSON)." } # type: ignore
+    except TypeError: # If crew_result_str is None
+        logger.error(f"Agent (CrewAI): Crew returned None or non-string result for event '{event_id}'.", exc_info=True)
+        return { "event_id": event_id, "status": "FailedToAnalyze", "reason_for_action": "Agent workflow returned unexpected data type." } # type: ignore
 
-    return analysis_output_dict
+    # The mock_final_assessment_dict is already structured like FraudAnalysisOutput.
+    return final_analysis_dict_from_crew
 
 
 if __name__ == "__main__":
     import asyncio
     from .schemas import DeviceInformation, Geolocation # For test data
 
-    async def test_fraud_detection_workflow():
-        print("--- Testing Fraud Detection Agent Workflow (Direct Tool Usage) ---")
+    async def test_fraud_detection_crew_workflow():
+        print("--- Testing Fraud Detection Agent Workflow (Simulated CrewAI) ---")
 
-        # Test Case 1: Low risk transaction
         event1_data = TransactionEventInput(
-            transaction_id="TRN_SAFE_001", customer_id="CUST-SAFE-001", account_number="1234509876",
+            transaction_id="TRN_SAFE_CREW_001", customer_id="CUST-SAFE-001",
             transaction_type="CardPayment", amount=5000.00, currency="NGN", channel="WebApp",
-            device_info=DeviceInformation(device_id="DEV_WEB_001", ip_address="192.168.1.10"),
-            geolocation_info=Geolocation(city="Lagos", country_code="NG"),
-            metadata={"merchant_category_code": "5411"} # Groceries
         )
-        print(f"\nTesting Low Risk Event: {event1_data.event_id}")
+        print(f"\nTesting Low Risk Event with Crew: {event1_data.event_id}")
         analysis1 = await analyze_transaction_for_fraud_async(event1_data)
-        print(f"Analysis Result 1: Score={analysis1.get('fraud_score')}, Risk={analysis1.get('risk_level')}, Action={analysis1.get('recommended_action')}")
-        print(f"  Triggered Rules: {json.dumps(analysis1.get('triggered_rules'), indent=2)}")
-        print(f"  Anomaly Details: {analysis1.get('anomaly_details')}")
+        print(f"Analysis Result 1 (Crew): Score={analysis1.get('fraud_score')}, Risk={analysis1.get('risk_level')}, Action={analysis1.get('recommended_action')}")
+        # print(json.dumps(analysis1, indent=2, default=str))
 
 
-        # Test Case 2: High risk transaction
         event2_data = TransactionEventInput(
-            transaction_id="TRN_RISKY_002", customer_id="CUST-RISKY-002", account_number="0987654321",
+            transaction_id="TRN_RISKY_CREW_002", customer_id="CUST-RISKY-002",
             transaction_type="NIPTransferOut", amount=750000.00, currency="NGN", channel="ThirdPartyAPI",
-            counterparty_account_number="SUSP001", counterparty_bank_code="999", counterparty_name="Shady Co.",
-            device_info=DeviceInformation(device_id="DEV_API_005", ip_address="203.0.113.45"), # Potentially risky IP
-            geolocation_info=Geolocation(city="RiskyVille", country_code="XZ"), # Fictional risky country
+            counterparty_account_number="SUSP001", counterparty_bank_code="999",
+            geolocation_info=Geolocation(city="RiskyVille", country_code="XZ"),
             metadata={"beneficiary_added_recently": True, "is_new_device_for_customer": True}
         )
-        print(f"\nTesting High Risk Event: {event2_data.event_id}")
+        print(f"\nTesting High Risk Event with Crew: {event2_data.event_id}")
         analysis2 = await analyze_transaction_for_fraud_async(event2_data)
-        print(f"Analysis Result 2: Score={analysis2.get('fraud_score')}, Risk={analysis2.get('risk_level')}, Action={analysis2.get('recommended_action')}")
-        print(f"  Triggered Rules: {json.dumps(analysis2.get('triggered_rules'), indent=2)}")
-        print(f"  Anomaly Details: {analysis2.get('anomaly_details')}")
+        print(f"Analysis Result 2 (Crew): Score={analysis2.get('fraud_score')}, Risk={analysis2.get('risk_level')}, Action={analysis2.get('recommended_action')}")
+        # print(json.dumps(analysis2, indent=2, default=str))
 
-        # Test Case 3: Dormant account activity
-        event3_data = TransactionEventInput(
-            transaction_id="TRN_DORMANT_003", customer_id="CUST-DORMANT-003", account_number="1122334455",
-            transaction_type="ATMWithdrawal", amount=150000.00, currency="NGN", channel="ATM",
-            device_info=DeviceInformation(ip_address="196.46.244.10"), # ATM IP
-            geolocation_info=Geolocation(city="Ibadan", country_code="NG"),
-        )
-        print(f"\nTesting Dormant Account Activity Event: {event3_data.event_id}")
-        analysis3 = await analyze_transaction_for_fraud_async(event3_data)
-        print(f"Analysis Result 3: Score={analysis3.get('fraud_score')}, Risk={analysis3.get('risk_level')}, Action={analysis3.get('recommended_action')}")
-        print(f"  Triggered Rules: {json.dumps(analysis3.get('triggered_rules'), indent=2)}")
-        print(f"  Anomaly Details: {analysis3.get('anomaly_details')}")
-
-    # asyncio.run(test_fraud_detection_workflow())
-    print("Fraud Detection Agent logic (agent.py). Contains workflow to analyze transactions using tools (mocked execution).")
+    # To run tests:
+    # logging.basicConfig(level=logging.DEBUG) # For more verbose logs
+    # asyncio.run(test_fraud_detection_crew_workflow())
+    print("Fraud Detection Agent logic (agent.py) updated with CrewAI Agent and Task structure (simulated CrewAI kickoff).")
