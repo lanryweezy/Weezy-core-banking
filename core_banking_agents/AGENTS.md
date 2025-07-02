@@ -1,96 +1,90 @@
 # AGENTS.md - Instructions for AI Agents Working on This Project
 
-This document provides general guidelines and conventions for AI agents (like you, Jules!) contributing to the `CoreBankingAIAgents` project. Agent-specific instructions may be found in `AGENTS.md` files within individual agent directories (e.g., `agents/customer_onboarding_agent/AGENTS.md`).
+This document provides general guidelines and conventions for AI agents (like you, Jules!) contributing to the `CoreBankingAIAgents` project. Agent-specific instructions may be found in `AGENTS.md` files within individual agent directories (e.g., `agents/customer_onboarding_agent/AGENTS.md`) if needed for highly specialized tasks.
 
 ## 1. General Principles
 
-*   **Modularity**: Each agent should be self-contained within its designated directory. Shared functionalities should reside in the `core/` directory.
-*   **Clarity**: Code should be well-commented, especially the logic within agent workflows, tool definitions, and complex Pydantic schemas.
-*   **Configuration over Code**: Where possible, use configuration files (e.g., `config.py` within each agent, `core/config.py` for shared settings) for parameters, API keys, and endpoints rather than hardcoding them. Load sensitive information from environment variables.
-*   **Error Handling**: Implement robust error handling in tools and agent workflows. Provide informative error messages.
-*   **Logging**: Use appropriate logging throughout the agent operations. (A centralized logging setup might be added to `core/` later). Standard Python `logging` module is preferred.
+*   **Modularity**: Each AI agent's primary logic, tools, schemas, and API should be self-contained within its designated directory (e.g., `agents/customer_onboarding_agent/`). Shared, cross-cutting functionalities (like database connections, core utilities, shared Pydantic models if any) should reside in the `core/` directory.
+*   **Clarity & Readability**: Code must be well-commented. Docstrings should clearly explain the purpose, arguments, and return values of functions, classes, tools, and Pydantic models. Agent roles, goals, and backstories should be descriptive.
+*   **Configuration over Code**:
+    *   Utilize a two-tier configuration system:
+        *   `core/config.py` (for `core_settings`): Shared settings like database URLs, Redis/Qdrant connection details, default LLM parameters, global API keys.
+        *   `<agent_folder>/config.py` (for agent-specific `settings`): Agent-specific parameters, model names, tool-specific API keys, or overrides for core settings.
+    *   All sensitive information (API keys, passwords) and environment-specific settings (URLs, ports) **must** be loaded from environment variables (e.g., using `os.getenv()`) with sensible defaults for local development. A `.env` file (gitignored) can be used locally.
+*   **Error Handling**: Implement robust error handling in tools, agent workflows, and API endpoints. Use FastAPI's `HTTPException` for API errors. Log errors comprehensively.
+*   **Logging**: Employ consistent logging throughout agent operations. The standard Python `logging` module is preferred. Configure basic logging in each `main.py` or a shared utility.
+*   **Idempotency**: Where applicable (e.g., some API POST/PUT operations, background tasks), design for idempotency if operations might be retried.
 
 ## 2. Python and FastAPI Conventions
 
-*   Follow **PEP 8** for Python code style. Use a linter/formatter like Ruff or Black if possible.
-*   Use **type hints** for all function signatures and variable declarations.
-*   For FastAPI:
-    *   Organize endpoints logically.
-    *   Use Pydantic models defined in `schemas.py` for request and response validation.
-    *   Utilize FastAPI's dependency injection system for shared resources like DB sessions or clients.
+*   Adhere to **PEP 8** for Python code style. Consider using a linter/formatter like Ruff or Black.
+*   Use **type hints** for all function signatures, variable declarations, and Pydantic model fields.
+*   For FastAPI (`main.py` in each agent):
+    *   Organize endpoints logically using tags.
+    *   Define request and response models using Pydantic schemas from the agent's `schemas.py`.
+    *   Utilize FastAPI's dependency injection for shared resources (e.g., `get_db` from `core.database`).
+    *   For operations that involve significant processing by the AI agent, use `BackgroundTasks` to offload the work from the main request-response cycle. The API should return an initial acknowledgment (e.g., `202 Accepted`) and provide another endpoint to poll for the result.
 
 ## 3. Agent Frameworks (CrewAI/LangChain)
 
 *   **Agent Definitions (`agent.py`)**:
-    *   Clearly define the `role`, `goal`, and `backstory` for each agent.
+    *   Clearly define `role`, `goal`, and `backstory`.
     *   List all `tools` the agent is permitted to use.
-    *   Specify the LLM to be used. Consider performance and cost implications (e.g., `gpt-3.5-turbo` for simpler tasks, `gpt-4-turbo` or `gpt-4o` for complex reasoning).
+    *   Specify the LLM. For initial development and testing, `FakeListLLM` from `langchain_community.llms.fake` is used to mock LLM responses and avoid API costs/dependencies. This will be replaced with actual LLMs (e.g., `ChatOpenAI`) later.
 *   **Tool Definitions (`tools.py`)**:
-    *   Each tool should have a clear name and a detailed docstring explaining its purpose, inputs, and outputs. Use the `@tool` decorator if using LangChain/CrewAI tools.
-    *   Tools should be focused and perform a single, well-defined task.
-    *   External API calls within tools must handle potential errors (network issues, API errors) gracefully.
+    *   Each tool should have a clear name (using `@tool` decorator) and a detailed docstring explaining its purpose, arguments (with type hints), and return structure.
+    *   Tools should perform a single, well-defined task.
+    *   External API calls within tools (even if mocked initially) must include placeholders or comments for actual implementation details (error handling, API key usage).
 *   **Task Definitions (`agent.py`)**:
-    *   Clearly describe the task, expected inputs, and the desired `expected_output` format (preferably JSON for structured data).
-    *   Assign the task to the appropriate agent.
-*   **Memory (`memory.py`)**:
-    *   Implement agent-specific memory solutions here. This might involve:
-        *   Short-term memory for conversation context (e.g., using Redis).
-        *   Long-term memory for persistent knowledge (e.g., Qdrant for vector similarity search, SQL DB for structured data).
-    *   Ensure memory access is efficient and secure.
+    *   Clearly describe the task's objective, any specific context or inputs it needs, and the `expected_output` format (preferably a JSON string for structured data that can be easily parsed).
+    *   Assign the task to the appropriate agent and specify any tools it's allowed to use for that task.
+    *   Define task dependencies using `context_tasks` where appropriate for sequential or hierarchical processing.
+*   **Workflow Orchestration (`agent.py`)**:
+    *   The primary async function (e.g., `start_onboarding_process`) should encapsulate the logic for setting up the Crew (agent, tasks) and kicking off the process.
+    *   This function should process the raw output from the Crew (typically the string result of the final task) and transform it into the structured dictionary format expected by the FastAPI layer (e.g., aligning with an `OutputSchema`).
+    *   During initial development, this function might directly orchestrate tool calls before full CrewAI integration.
 
-## 4. API Design (FastAPI `main.py`)
+## 4. Data Handling and Persistence
 
-*   Endpoints should be RESTful.
-*   Use clear and consistent naming for paths and parameters.
-*   Version your API if significant changes are expected (e.g., `/api/v1/...`). The current agent structure implies individual FastAPI apps, so versioning might be per-agent.
+*   **Pydantic Schemas (`schemas.py`)**: Define all data structures for API requests, responses, and complex tool inputs/outputs here. Use `Literal` types for controlled vocabularies. Include example data in `Config.json_schema_extra`.
+*   **Mock Data Stores**: For current development, each agent's `main.py` uses in-memory Python dictionaries (e.g., `MOCK_ONBOARDING_DB`) to simulate databases or state persistence. This is for rapid prototyping.
+*   **Planned Persistent Stores**:
+    *   `core/database.py`: Configured for SQLAlchemy (SQLite default, PostgreSQL option) for structured relational data.
+    *   `core/redis_client.py`: Configured for connecting to Redis, intended for caching, session management, task queues, and agent short-term/intermediate memory.
+    *   `core/qdrant_client.py`: Configured for connecting to Qdrant, intended for vector storage for semantic search, RAG, and long-term AI memory.
 
-## 5. Configuration (`config.py`)
+## 5. Testing
 
-*   Use a class-based approach for settings (e.g., `class Settings:`).
-*   Load values from environment variables using `os.getenv()`, providing sensible defaults.
-*   Agent-specific configurations go into the agent's `config.py`.
-*   Shared configurations (DB URLs, common API keys, Redis/Qdrant host/port) go into `core/config.py`. Agents can import `core_settings` from `core.config`.
+*   **Unit/Component Tests**: Each `tools.py` and `agent.py` file should include an `if __name__ == "__main__":` block with test cases that demonstrate the functionality of the tools and the (mocked) agent workflows.
+*   **API Testing**: FastAPI's automatic Swagger UI (`/docs`) and ReDoc (`/redoc`) are invaluable for manual API testing during development.
+*   (Future) Automated API tests using `pytest` and `httpx` will be added.
 
-## 6. Database (`core/database.py`)
+## 6. Security Considerations
 
-*   If using SQLAlchemy, define models clearly, potentially in a `models.py` file per agent or a central `core/models.py` if schemas are shared. (This project currently has schemas in `schemas.py` per agent, which are Pydantic models for API validation, not necessarily DB models).
-*   Database interactions should be handled through repository patterns or service layers if complexity grows.
+*   **API Keys & Secrets**: As per section 1, load from environment variables.
+*   **Input Validation**: Pydantic models provide primary validation. Add custom validators in Pydantic models if more complex business rule validation is needed at the schema level.
+*   **Authentication/Authorization**: Currently, agent APIs are not secured. This is a placeholder for future implementation (e.g., API key auth, OAuth2).
 
-## 7. Vector Database (`core/qdrant_client.py`)
+## 7. Nigerian Market Specifics
 
-*   When using Qdrant for AI memory or semantic search:
-    *   Define collection names clearly, perhaps in `core/config.py` or agent-specific configs.
-    *   Ensure appropriate vector sizes and distance metrics are used for collections.
-    *   Handle embedding generation consistently (e.g., using a specific OpenAI model or a sentence transformer).
+*   Ensure implementations related to KYC (BVN, NIN), payment systems (NIP), financial products, and regulatory reporting (CBN, NFIU, NDIC) align with Nigerian regulations and common practices.
+*   Use "NGN" as the default currency where applicable. Consider proper handling for other currencies if supported.
 
-## 8. Testing
+## Workflow for AI Development Contributions
 
-*   Write unit tests for tools, agent logic, and utility functions.
-*   Write integration tests for FastAPI endpoints.
-*   (Placeholder: Testing infrastructure to be further defined).
-
-## 9. Security
-
-*   **API Keys & Secrets**: Never hardcode API keys or sensitive credentials. Load them from environment variables (managed via `.env` locally or secrets management in production).
-*   **Input Validation**: Use Pydantic schemas rigorously for all API inputs.
-*   **Output Sanitization**: Be cautious when returning data, especially if it incorporates external content. (Placeholder: To be detailed further).
-*   **Authentication/Authorization**: (Placeholder: Mechanisms for securing agent APIs to be defined. Could involve API keys, OAuth2, etc.).
-
-## 10. Nigerian Market Specifics
-
-*   When implementing features related to KYC, BVN/NIN, payment systems (NIP, USSD), or regulatory reporting (CBN, NDIC, NFIU), ensure that the logic and data models align with Nigerian regulations and standards.
-*   Currency should be handled appropriately, with "NGN" as a common default. VAT and Stamp Duty calculations should be accurate if implemented.
-
-## Workflow for Making Changes
-
-1.  **Understand the Task**: Clarify requirements.
-2.  **Plan**: Use the `set_plan` tool to outline your steps.
+1.  **Understand Task**: Clarify requirements from the user/issue.
+2.  **Plan**: Use `set_plan` to outline your implementation steps.
 3.  **Implement**:
-    *   Create or modify files.
-    *   Add comments and docstrings.
+    *   Create/modify files in the appropriate agent or core directory.
+    *   Follow schema-first approach for APIs (define Pydantic models in `schemas.py`).
+    *   Develop tools in `tools.py` with clear contracts.
+    *   Define agent and task logic in `agent.py`.
+    *   Expose functionality via FastAPI endpoints in `main.py`.
+    *   Add comments, docstrings, and type hints.
+    *   Write test cases in `if __name__ == "__main__":` blocks or separate test files.
     *   Update `requirements.txt` if new dependencies are added.
-4.  **Test (Simulated)**: Mentally review your changes. If a testing framework were active, you'd run tests.
+4.  **Test (Simulated/Manual)**: Run your `if __name__ == "__main__":` tests. Manually test API endpoints via Swagger UI if applicable.
 5.  **Review `AGENTS.md`**: Ensure your changes comply with these guidelines.
-6.  **Submit**: Use `submit` with a clear commit message.
+6.  **Submit**: Use `submit` with a clear, conventional commit message detailing the changes.
 
-By following these guidelines, you will help maintain a clean, robust, and scalable codebase. If any instruction is unclear or conflicts with the user's request, please ask for clarification.
+If any instruction is unclear or conflicts with a direct user request, prioritize the user's request but seek clarification if the conflict seems significant or detrimental. Your goal is to build robust, maintainable, and effective AI agent components.
