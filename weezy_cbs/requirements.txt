@@ -1,0 +1,73 @@
+# FastAPI and related
+fastapi
+uvicorn[standard] # Includes websockets, http-tools, etc.
+pydantic[email] # For email validation in schemas
+
+# SQLAlchemy and DB drivers
+sqlalchemy
+psycopg2-binary # For PostgreSQL. Use 'mysqlclient' for MySQL, etc.
+# For SQLite (often built-in with Python, but good to list if specific version needed or for clarity)
+# sqlite3 (typically not needed to list as it's part of standard library)
+
+# HTTP client
+requests
+
+# Date utilities
+python-dateutil
+
+# JWT for session tokens (example)
+PyJWT
+
+# Password Hashing (example - choose one like passlib or bcrypt)
+passlib[bcrypt]
+# bcrypt
+
+# Data manipulation (especially for agents like reconciliation, finance insights)
+pandas
+
+# AI/ML libraries (examples, add based on actual model implementations)
+# scikit-learn # For many ML tasks
+# tensorflow # For deep learning
+# torch # For deep learning
+# fbprophet # For time-series forecasting (Finance Insights Agent example) - Note: can have tricky installs
+# transformers # For HuggingFace LLMs
+# sentence-transformers # For text embeddings
+
+# LLM Orchestration (examples - choose based on agent implementation)
+# crewai
+# langgraph
+# langchain
+# autogen-studio
+
+# For specific integrations (examples)
+# boto3 # For AWS S3, SQS etc.
+# google-cloud-storage # For GCS
+# paystack # Official Paystack Python library (if available and used)
+# flutterwave-python # Official Flutterwave Python library (if available and used)
+
+# Reporting/Templating (examples)
+# Jinja2 # For HTML templates, email templates
+# reportlab # For PDF generation
+# openpyxl # For Excel (XLSX) read/write
+# weasyprint # For HTML/CSS to PDF
+
+# Other utilities
+# python-dotenv # For loading .env files (good practice for local dev)
+# redis # If using Redis for caching, session store, OTP store etc.
+
+# Linters and Formatters (for development)
+# flake8
+# black
+# isort
+# mypy # For type checking
+
+# Testing
+# pytest
+# pytest-cov
+# httpx # For async HTTP requests in tests, or as an alternative to requests
+
+# NOTE: This is a comprehensive list.
+# Only include what's actively being used or planned for immediate use.
+# Some AI/ML libraries can be heavy; consider if they are part of the core application
+# or separate microservices. `fbprophet` in particular can be complex to install.
+# The specific database driver (psycopg2-binary) should match your chosen database.
