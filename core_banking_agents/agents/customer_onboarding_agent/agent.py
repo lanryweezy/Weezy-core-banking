@@ -1,201 +1,349 @@
 # LangChain/CrewAI agent logic for Customer Onboarding
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime
+import json # For parsing expected outputs if they are JSON strings
 
 # Assuming schemas are in the same directory
-from .schemas import OnboardingRequest, VerificationStepResult, VerificationStatus, OnboardingProcess
-# from .tools import ocr_tool, face_match_tool, nin_bvn_verification_tool # Import your tools when ready
-# from .memory import store_onboarding_progress_in_memory # Example memory function
+from .schemas import OnboardingRequest, VerificationStepResult, VerificationStatus, DocumentType
+# Import the defined tools
+from .tools import nin_bvn_verification_tool, ocr_tool, face_match_tool
 
-# from crewai import Agent, Task, Crew, Process
-# from langchain_openai import ChatOpenAI
-# from ..core.config import core_settings # For OPENAI_API_KEY if needed
+from crewai import Agent, Task, Crew, Process
+# from langchain_openai import ChatOpenAI # Actual LLM
+from langchain_community.llms.fake import FakeListLLM # Using FakeListLLM for mocking CrewAI execution
 
-# --- Mock Data Store (to be replaced by proper memory/DB interaction) ---
-# This is temporary, to simulate updates that the FastAPI endpoints can see via the main.py's MOCK_ONBOARDING_DB
-# In a real system, the agent would update a shared persistent store (DB, Redis stream, etc.)
-# from .main import MOCK_ONBOARDING_DB # This creates a circular dependency if agent.py is imported by main.py for this.
-# A better approach is for the agent to interact with a separate memory module or database.
-# For now, we'll assume the main FastAPI app handles the MOCK_ONBOARDING_DB, and agent returns data.
-
-
-# --- Agent Definition (Placeholder) ---
-# def get_customer_onboarding_llm():
-#     # Ensure OPENAI_API_KEY is loaded, e.g., from core_settings or agent-specific config
-#     # return ChatOpenAI(model_name=core_settings.DEFAULT_LLM_MODEL, temperature=0.2, openai_api_key=core_settings.OPENAI_API_KEY)
-#     return None # Placeholder
-
-# customer_onboarding_specialist = Agent(
-#     role="Customer Onboarding Specialist AI",
-#     goal=(
-#         "Efficiently and accurately manage the entire customer KYC process, "
-#         "from initial data collection and document submission to multi-step verification (BVN, NIN, ID, Face Match), "
-#         "and final decisioning for account opening, adhering to Nigerian banking regulations (CBN tiers)."
-#     ),
-#     backstory=(
-#         "An advanced AI agent designed to streamline customer onboarding for a modern Nigerian bank. "
-#         "It leverages a suite of specialized tools to perform verifications, assess risk, and ensure compliance. "
-#         "It aims to provide a seamless experience for applicants while maintaining strict regulatory adherence."
-#     ),
-#     # tools=[ocr_tool, face_match_tool, nin_bvn_verification_tool], # Add tools as they are defined
-#     # llm=get_customer_onboarding_llm(),
-#     verbose=True,
-#     allow_delegation=False, # This agent likely handles the full flow or delegates to specific tools only
-#     # memory=True # If using CrewAI's built-in memory features, configure appropriately
-# )
-
-# --- Task Definitions (Placeholders) ---
-# def create_onboarding_tasks(onboarding_request_data: Dict[str, Any]):
-#     tasks = []
-
-#     # Task 1: Initial Data Validation & BVN/NIN Verification
-#     bvn_nin_verification_task = Task(
-#         description=f"""\
-#         Validate initial customer data and perform BVN/NIN verification for:
-#         Name: {onboarding_request_data.get('first_name')} {onboarding_request_data.get('last_name')}
-#         BVN: {onboarding_request_data.get('bvn')}
-#         NIN: {onboarding_request_data.get('nin')}
-#         DOB: {onboarding_request_data.get('date_of_birth')}
-#         Phone: {onboarding_request_data.get('phone_number')}
-
-#         Use the nin_bvn_verification_tool. Focus on matching provided details with official records.
-#         Determine if the provided BVN and/or NIN are valid and belong to the applicant.
-#         Output should be a JSON object with verification status for BVN and NIN, any discrepancies found, and official data if matched.
-#         Example output: {{
-#             "bvn_verification": {{ "status": "Verified", "matched_name": "Adewale Ogunseye", "message": "BVN details match." }},
-#             "nin_verification": {{ "status": "Pending", "message": "NIN not provided or verification pending." }}
-#         }}
-#         """,
-#         expected_output="JSON detailing BVN and NIN verification results, including status, messages, and matched data.",
-#         agent=customer_onboarding_specialist,
-#         # tools=[nin_bvn_verification_tool] # Specify tools for this task if needed for clarity
-#     )
-#     tasks.append(bvn_nin_verification_task)
-
-    # Task 2: Document Verification (OCR and checks) - depends on documents in onboarding_request_data.documents
-    # ...
-
-    # Task 3: Face Match (Selfie vs ID Photo)
-    # ...
-
-    # Task 4: Address Verification (especially for Tier 2/3)
-    # ...
-
-    # Task 5: AML Screening
-    # ...
-
-    # Task 6: Final Decision and Tier Assignment
-    # ...
-#     return tasks
+# --- LLM Configuration (Mocked for now) ---
+def get_customer_onboarding_llm(expected_responses: List[str]):
+    # In a real scenario, load API keys from config (e.g., core_settings.OPENAI_API_KEY)
+    # return ChatOpenAI(model_name="gpt-4-turbo", temperature=0.1)
+    # For testing without actual LLM calls, use FakeListLLM
+    # Each response in the list corresponds to an expected LLM call by the agent/tasks.
+    # The content of these responses should be what the LLM would ideally return to fulfill the task's expected_output.
+    return FakeListLLM(responses=expected_responses)
 
 
-# --- Main Workflow Function ---
-async def start_onboarding_process(onboarding_id: str, request_data: OnboardingRequest) -> Dict[str, Any]:
-    """
-    Initiates and manages the customer onboarding workflow.
-    This function will eventually set up and run the CrewAI agent and tasks.
-    For now, it returns a mock status and simulates the start of the process.
-    """
-    print(f"Agent Log: Starting onboarding process for ID: {onboarding_id}, Customer: {request_data.first_name} {request_data.last_name}")
+# --- Agent Definition ---
+# Note: Tools are instantiated when creating the agent or tasks.
+# For CrewAI, tools are typically passed to the Agent constructor.
 
-    # In a real scenario, this function would:
-    # 1. Log the request and initial state.
-    # 2. Potentially persist the OnboardingProcess object to a database.
-    # 3. Prepare inputs for the CrewAI agent.
-    #    onboarding_crew_inputs = request_data.model_dump() # Pass all data to the crew
-    #    onboarding_crew_inputs['onboarding_id'] = onboarding_id
-    # 4. Create and configure the Crew.
-    #    tasks = create_onboarding_tasks(onboarding_crew_inputs)
-    #    onboarding_crew = Crew(
-    #        agents=[customer_onboarding_specialist],
-    #        tasks=tasks,
-    #        process=Process.sequential, # Or hierarchical if tasks depend on each other in complex ways
-    #        verbose=2,
-    #        # memory_manager=... # If using custom memory management across tasks
-    #    )
-    # 5. Kick off the Crew. This would be an async operation in a real system.
-    #    crew_result = onboarding_crew.kickoff(inputs=onboarding_crew_inputs)
-    #    print(f"Agent Log: CrewAI kickoff result for {onboarding_id}: {crew_result}")
-    #    # The crew_result would contain the output of the final task.
-    #    # This result needs to be parsed to update the OnboardingProcess object.
+onboarding_tools = [nin_bvn_verification_tool, ocr_tool, face_match_tool]
 
-    # MOCK IMPLEMENTATION:
-    # Simulate the agent starting its work and providing an initial update.
-    # This function will return the fields that need to be updated in the OnboardingProcess object.
+# This is a placeholder for expected LLM outputs if we were to run the full crew.
+# The number of responses should match the number of times the LLM is invoked by the agent across all tasks.
+# For now, we'll mock the task outputs directly instead of mocking the LLM responses that produce them.
+# llm = get_customer_onboarding_llm(expected_responses=["Mock LLM response for task 1", "Mock for task 2", ...])
 
-    initial_update_payload = {
-        "status": "PendingVerification",
-        "message": "Agent received onboarding request. Verification steps initiated.",
-        "last_updated_at": datetime.utcnow(),
-        "verification_steps": [ # Simulating that the agent has acknowledged the steps
-            VerificationStepResult(step_name="BVNVerification", status=VerificationStatus(status="InProgress", message="BVN check started by agent.")),
-            VerificationStepResult(step_name="NINVerification", status=VerificationStatus(status="Pending", message="NIN check pending BVN.")),
-            VerificationStepResult(step_name="IDDocumentCheck", status=VerificationStatus(status="Pending")),
-            VerificationStepResult(step_name="FaceMatch", status=VerificationStatus(status="Pending")),
-            VerificationStepResult(step_name="AddressVerification", status=VerificationStatus(status="NotStarted" if request_data.requested_account_tier.tier in ["Tier2", "Tier3"] else "NotApplicable")),
-            VerificationStepResult(step_name="AMLScreening", status=VerificationStatus(status="Pending"))
-        ]
+customer_onboarding_specialist = Agent(
+    role="Customer Onboarding Specialist AI",
+    goal=(
+        "Efficiently and accurately manage the entire customer KYC process, "
+        "from initial data collection and document submission to multi-step verification (BVN, NIN, ID, Face Match), "
+        "and final decisioning for account opening, adhering to Nigerian banking regulations (CBN tiers)."
+    ),
+    backstory=(
+        "An advanced AI agent designed to streamline customer onboarding for a modern Nigerian bank. "
+        "It leverages a suite of specialized tools to perform verifications, assess risk, and ensure compliance. "
+        "It aims to provide a seamless experience for applicants while maintaining strict regulatory adherence."
+    ),
+    tools=onboarding_tools,
+    llm=FakeListLLM(responses=["Okay, I will start the BVN/NIN verification.", "Processing ID document.", "Processing utility bill.", "Performing face match.", "AML screening complete.", "Finalizing assessment."]), # Provide enough mock responses for the agent's internal thoughts/tool selections
+    verbose=True,
+    allow_delegation=False,
+)
+
+# --- Task Definitions ---
+def create_onboarding_tasks(onboarding_request_data: Dict[str, Any], documents: List[DocumentType]) -> List[Task]:
+    tasks = []
+    # Convert dict to OnboardingRequest Pydantic model for easier access if needed, or use dict directly.
+    # For context in tasks, it's often easier to pass simple dicts or strings.
+    context = {
+        "bvn": onboarding_request_data.get("bvn"),
+        "nin": onboarding_request_data.get("nin"),
+        "first_name": onboarding_request_data.get("first_name"),
+        "last_name": onboarding_request_data.get("last_name"),
+        "date_of_birth": onboarding_request_data.get("date_of_birth"),
+        "phone_number": onboarding_request_data.get("phone_number"),
+        "documents": [doc.model_dump() for doc in documents] # Pass document info
     }
 
-    # Simulate storing this initial progress (in a real system, this updates a DB record)
-    # store_onboarding_progress_in_memory(onboarding_id, initial_update_payload)
+    # Task 1: BVN/NIN Verification
+    bvn_nin_task = Task(
+        description=f"""\
+        Verify the customer's BVN and/or NIN using the provided details.
+        Input Context: {json.dumps(context)}
+        Use the NINBVNVerificationTool.
+        Focus on matching provided details (first name, last name, DOB, phone) with official records.
+        """,
+        expected_output="""\
+        A JSON string detailing BVN and NIN verification results.
+        Example: {
+            "bvn_verification": {"status": "Verified", "details": {"message": "BVN details match.", "matched_data": {...}}},
+            "nin_verification": {"status": "Mismatch", "details": {"message": "NIN details mismatch.", "mismatches": ["DOB mismatch"], "nin_record_summary": {...}}}
+        }""",
+        agent=customer_onboarding_specialist,
+        tools=[nin_bvn_verification_tool] # Explicitly list tools for the task if different from agent's default
+    )
+    tasks.append(bvn_nin_task)
 
-    print(f"Agent Log: Mock processing complete for {onboarding_id}. Payload to update: {initial_update_payload}")
-    return initial_update_payload
+    # Task 2: ID Document Processing
+    id_document = next((doc for doc in documents if doc.type_name in ["NationalID", "DriversLicense", "Passport"]), None)
+    if id_document:
+        id_doc_task = Task(
+            description=f"""\
+            Process the customer's ID document using OCR.
+            Document URL: {id_document.url}, Document Type: {id_document.type_name}
+            Use the OCRTool.
+            Extract key information from the document.
+            """,
+            expected_output=f"""\
+            A JSON string with OCR results for the ID document.
+            Example: {{
+                "document_type": "{id_document.type_name}", "status": "Success",
+                "extracted_data": {{"surname": "...", "first_name": "...", "nin": "...", "date_of_birth": "..."}}
+            }}""",
+            agent=customer_onboarding_specialist,
+            tools=[ocr_tool],
+            context={"document_url": id_document.url, "document_type": id_document.type_name} # Provide specific context if needed
+        )
+        tasks.append(id_doc_task)
+
+    # Task 3: Utility Bill Processing (if applicable, e.g., for Tier 2/3 address verification)
+    utility_bill_doc = next((doc for doc in documents if doc.type_name == "UtilityBill"), None)
+    if utility_bill_doc and onboarding_request_data.get("requested_account_tier", {}).get("tier") in ["Tier2", "Tier3"]:
+        utility_bill_task = Task(
+            description=f"""\
+            Process the customer's utility bill using OCR for address verification.
+            Document URL: {utility_bill_doc.url}, Document Type: {utility_bill_doc.type_name}
+            Use the OCRTool.
+            Extract address information and biller details.
+            """,
+            expected_output=f"""\
+            A JSON string with OCR results for the utility bill.
+            Example: {{
+                "document_type": "{utility_bill_doc.type_name}", "status": "Success",
+                "extracted_data": {{"account_name": "...", "address": "...", "biller": "..."}}
+            }}""",
+            agent=customer_onboarding_specialist,
+            tools=[ocr_tool]
+        )
+        tasks.append(utility_bill_task)
+
+    # Task 4: Face Match
+    selfie_doc = next((doc for doc in documents if doc.type_name == "Selfie"), None)
+    # Assume ID photo URL comes from OCR result of ID document or is passed explicitly
+    # For mock, we'll need to ensure id_photo_url is available in context if this task runs
+    if selfie_doc and id_document: # Simplified: assumes id_document was processed
+        face_match_task = Task(
+            description=f"""\
+            Perform a face match between the customer's selfie and their ID photo.
+            Selfie URL: {selfie_doc.url}
+            ID Photo URL (assumed to be from processed ID document): {id_document.url} (placeholder, real URL would be from OCR'd ID image)
+            Use the FaceMatchTool.
+            """,
+            expected_output="""\
+            A JSON string with face match results.
+            Example: {"status": "Success", "is_match": true, "match_score": 0.92, "confidence": "High"}""",
+            agent=customer_onboarding_specialist,
+            tools=[face_match_tool]
+        )
+        tasks.append(face_match_task)
+
+    # Task 5: AML Screening (Placeholder)
+    aml_task = Task(
+        description="Perform AML screening for the applicant based on their provided details.",
+        expected_output="JSON string indicating AML check status. Example: {\"aml_status\": \"Clear\", \"risk_rating\": \"Low\"}",
+        agent=customer_onboarding_specialist
+    )
+    tasks.append(aml_task)
+
+    # Task 6: Final Assessment & Tier Assignment
+    final_assessment_task = Task(
+        description="""\
+        Consolidate all verification results (BVN/NIN, ID OCR, Utility Bill OCR, Face Match, AML).
+        Assess overall KYC status. Determine the achievable account tier based on verified information.
+        Provide a final recommendation: 'Approve', 'Reject', or 'RequiresManualReview'.
+        If 'Approve', specify the approved tier. If 'Reject' or 'RequiresManualReview', provide clear reasons.
+        """,
+        expected_output="""\
+        A JSON string summarizing the final assessment.
+        Example: {
+            "overall_status": "Approve", "approved_tier": "Tier1",
+            "summary_message": "All verifications successful. Approved for Tier 1 account.",
+            "bvn_nin_result": {/* from previous task */},
+            "id_ocr_result": {/* ... */},
+            "face_match_result": {/* ... */},
+            "aml_result": {/* ... */}
+        }""",
+        agent=customer_onboarding_specialist,
+        # This task might not use tools directly but relies on context from previous tasks.
+        # context = previous_task_outputs would be implicitly managed by CrewAI
+    )
+    tasks.append(final_assessment_task)
+
+    return tasks
+
+# --- Main Workflow Function ---
+async def start_onboarding_process(onboarding_id: str, request: OnboardingRequest) -> Dict[str, Any]:
+    """
+    Initiates and manages the customer onboarding workflow using CrewAI.
+    """
+    print(f"Agent Log: Starting CrewAI onboarding process for ID: {onboarding_id}, Customer: {request.first_name} {request.last_name}")
+
+    onboarding_crew_inputs = request.model_dump()
+    onboarding_crew_inputs['onboarding_id'] = onboarding_id
+
+    # Create tasks based on the request (e.g., which documents were provided)
+    defined_tasks = create_onboarding_tasks(onboarding_crew_inputs, request.documents)
+
+    if not defined_tasks:
+        print(f"Agent Log: No tasks defined for {onboarding_id}. Aborting.")
+        return {
+            "status": "RequiresManualIntervention", # type: ignore
+            "message": "Agent could not define tasks based on input. Please review.",
+            "last_updated_at": datetime.utcnow(),
+            "verification_steps": []
+        }
+
+    onboarding_crew = Crew(
+        agents=[customer_onboarding_specialist],
+        tasks=defined_tasks,
+        process=Process.sequential,
+        verbose=2,
+        # memory=True # Enable memory for the crew if needed for context passing across complex tasks
+    )
+
+    # --- MOCKING CREW EXECUTION ---
+    # In a real scenario, you'd run: crew_result = onboarding_crew.kickoff(inputs=onboarding_crew_inputs)
+    # For now, we'll construct a mock result based on the tasks.
+    print(f"Agent Log: Simulating CrewAI kickoff for {onboarding_id} with {len(defined_tasks)} tasks.")
+
+    # This is a highly simplified mock of the final task's output.
+    # A real CrewAI execution would populate this based on actual tool calls and LLM processing.
+    mock_final_assessment_output = {
+        "overall_status": "Approve", # Possible: "Approve", "Reject", "RequiresManualReview"
+        "approved_tier": request.requested_account_tier.tier, # Defaulting to requested, real logic would determine this
+        "summary_message": f"Mock approval for {request.first_name}. All checks passed (simulated).",
+        "bvn_nin_result": {"bvn_verification": {"status": "Verified"}, "nin_verification": {"status": "Verified"}}, # Mock
+        "id_ocr_result": {"status": "Success", "extracted_data": {"first_name": request.first_name}}, # Mock
+        "face_match_result": {"status": "Success", "is_match": True, "match_score": 0.9}, # Mock
+        "aml_result": {"aml_status": "Clear", "risk_rating": "Low"}, # Mock
+        # Utility bill result would be here if applicable
+    }
+    crew_result_str = json.dumps(mock_final_assessment_output) # CrewAI tasks often return strings
+
+    print(f"Agent Log: Mock CrewAI processing complete for {onboarding_id}.")
+    # --- END MOCKING CREW EXECUTION ---
+
+    # Process the crew_result to update the OnboardingProcess structure
+    try:
+        final_assessment = json.loads(crew_result_str) # Assuming the final task returns a JSON string
+    except json.JSONDecodeError:
+        print(f"Agent Log: Error decoding final assessment JSON for {onboarding_id}.")
+        final_assessment = {"overall_status": "RequiresManualIntervention", "summary_message": "Error processing agent results."}
+
+
+    # Update verification steps based on (mocked) individual task results if available in final_assessment
+    updated_verification_steps: List[Dict[str, Any]] = [] # Will hold dicts to be parsed by Pydantic
+
+    # BVN/NIN
+    bvn_res = final_assessment.get("bvn_nin_result", {}).get("bvn_verification", {})
+    nin_res = final_assessment.get("bvn_nin_result", {}).get("nin_verification", {})
+    updated_verification_steps.append({
+        "step_name": "BVNVerification",
+        "status": {"status": bvn_res.get("status", "Error"), "message": bvn_res.get("details", {}).get("message"), "details": bvn_res.get("details")}
+    })
+    updated_verification_steps.append({
+        "step_name": "NINVerification",
+        "status": {"status": nin_res.get("status", "Error"), "message": nin_res.get("details", {}).get("message"), "details": nin_res.get("details")}
+    })
+
+    # ID Document
+    id_ocr_res = final_assessment.get("id_ocr_result", {})
+    updated_verification_steps.append({
+        "step_name": "IDDocumentCheck",
+        "status": {"status": id_ocr_res.get("status", "Error"), "message": id_ocr_res.get("error_message"), "details": id_ocr_res.get("extracted_data")}
+    })
+
+    # Face Match
+    face_match_res = final_assessment.get("face_match_result", {})
+    updated_verification_steps.append({
+        "step_name": "FaceMatch",
+        "status": {"status": face_match_res.get("status", "Error"), "message": face_match_res.get("message"), "details": face_match_res}
+    })
+
+    # AML Screening
+    aml_res = final_assessment.get("aml_result", {})
+    updated_verification_steps.append({
+        "step_name": "AMLScreening",
+        "status": {"status": aml_res.get("aml_status", "Error"), "message": aml_res.get("message"), "details": aml_res}
+    })
+
+    # Utility Bill (if processed)
+    util_ocr_res = final_assessment.get("utility_bill_ocr_result", {}) # Assuming it might be nested if run
+    if util_ocr_res:
+         updated_verification_steps.append({
+            "step_name": "AddressVerification", # Assuming utility bill is for address
+            "status": {"status": util_ocr_res.get("status", "Error"), "message": util_ocr_res.get("error_message"), "details": util_ocr_res.get("extracted_data")}
+        })
+    else: # Ensure AddressVerification step is present even if not run or N/A
+        addr_ver_step = next((s for s in request.documents if s.type_name == "UtilityBill"), None) # Check if it was expected
+        if addr_ver_step or request.requested_account_tier.tier in ["Tier2", "Tier3"]:
+            updated_verification_steps.append({"step_name": "AddressVerification", "status": {"status": "NotStarted"}})
+        else:
+            updated_verification_steps.append({"step_name": "AddressVerification", "status": {"status": "NotApplicable"}})
+
+
+    overall_onboarding_status = final_assessment.get("overall_status", "RequiresManualIntervention")
+    achieved_tier_val = final_assessment.get("approved_tier") if overall_onboarding_status == "Approve" else None
+
+
+    # This is the payload that main.py will use to update the OnboardingProcess object
+    update_payload = {
+        "status": overall_onboarding_status,
+        "message": final_assessment.get("summary_message", "Processing complete. Review details."),
+        "last_updated_at": datetime.utcnow(),
+        "achieved_tier": {"tier": achieved_tier_val} if achieved_tier_val else None,
+        "verification_steps": updated_verification_steps,
+        "customer_id": f"CUST-{onboarding_id.split('-')[-1]}" if overall_onboarding_status == "Approve" else None # Mock customer ID
+    }
+    return update_payload
 
 
 async def get_onboarding_status_from_agent(onboarding_id: str) -> Dict[str, Any]:
     """
-    Retrieves the current status of the onboarding process from the agent's perspective or memory.
+    Retrieves the current status of the onboarding process. (Mocked)
+    In a real system, this would query where the agent/crew stores its state.
     """
-    print(f"Agent Log: Fetching status for onboarding ID: {onboarding_id}")
-    # In a real system, this would query the persistent store (DB, Redis) where the agent
-    # writes its progress.
-    # For now, this is a mock. It doesn't interact with the FastAPI's MOCK_ONBOARDING_DB directly.
-    # It would return the data that the FastAPI endpoint can then use to update its own MOCK_ONBOARDING_DB if needed.
-
-    # Example:
-    # progress_data = retrieve_onboarding_progress_from_memory(onboarding_id)
-    # if not progress_data:
-    #     return None # Or raise an error
-    # return progress_data
-
-    # Mock: Assume no further updates from agent beyond initial for now
-    return {
-        "message": "Agent status check: No further updates since initiation (mock).",
+    print(f"Agent Log: Fetching status for onboarding ID: {onboarding_id} (mocked, no active polling)")
+    return { # This function is less relevant if start_onboarding_process returns the final state for the background task
+        "message": "Status check from agent: Process is assumed to be handled by the initial call. Query DB for actual status.",
         "last_updated_at": datetime.utcnow()
-        # Potentially return specific step statuses if the agent had updated them
     }
 
 
 if __name__ == "__main__":
-    # Example of how this agent logic might be invoked (for testing purposes)
-    # This would typically be called from the FastAPI endpoint.
     import asyncio
+    import json
 
     async def test_run():
+        mock_documents = [
+            DocumentType(type_name="NationalID", url=HttpUrl("http://example.com/id.jpg")),
+            DocumentType(type_name="Selfie", url=HttpUrl("http://example.com/selfie.jpg")),
+            # DocumentType(type_name="UtilityBill", url=HttpUrl("http://example.com/bill.pdf"))
+        ]
         mock_request_data = OnboardingRequest(
-            first_name="Test",
-            last_name="User",
-            date_of_birth="2000-01-01",
-            phone_number="08011223344",
-            email_address="test.user@example.com",
-            bvn="11223344556",
-            requested_account_tier={"tier": "Tier1"},
-            documents=[{"type_name": "Selfie", "url": "http://example.com/selfie.jpg"}]
+            first_name="Test", last_name="User", date_of_birth="2000-01-01",
+            phone_number="08011223344", email_address="test.user@example.com",
+            bvn="11223344556", nin="88776655443",
+            requested_account_tier={"tier": "Tier1"}, documents=mock_documents
         )
-        onboarding_id_test = "ONB-AGENTTEST01"
+        onboarding_id_test = "ONB-CREWTEST01"
 
-        print(f"\n--- Simulating start_onboarding_process for {onboarding_id_test} ---")
-        initial_status = await start_onboarding_process(onboarding_id_test, mock_request_data)
-        print(f"Initial status from agent for {onboarding_id_test}:")
-        # print(json.dumps(initial_status, indent=2, default=str)) # Using default=str for datetime
+        print(f"\n--- Simulating start_onboarding_process (CrewAI) for {onboarding_id_test} ---")
+        update_payload = await start_onboarding_process(onboarding_id_test, mock_request_data)
+        print(f"Update payload from agent for {onboarding_id_test}:")
+        print(json.dumps(update_payload, indent=2, default=str))
 
-        print(f"\n--- Simulating get_onboarding_status_from_agent for {onboarding_id_test} ---")
-        current_status = await get_onboarding_status_from_agent(onboarding_id_test)
-        print(f"Current status from agent for {onboarding_id_test}:")
-        # print(json.dumps(current_status, indent=2, default=str))
-
-    # asyncio.run(test_run())
-    print("Customer Onboarding Agent logic (agent.py). Contains placeholders for CrewAI agent, tasks, and workflow functions.")
+    asyncio.run(test_run())
+    print("\nCustomer Onboarding Agent logic (agent.py) with CrewAI structure (mocked execution).")

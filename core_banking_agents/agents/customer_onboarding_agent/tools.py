@@ -1,59 +1,358 @@
 # Tools for Customer Onboarding Agent
 
-# from langchain.tools import tool
-# import requests # Example for API calls
+from langchain.tools import tool
+from pydantic import HttpUrl # For type hinting if URLs are passed directly to tools
+from typing import Optional, Dict, Any
+import random
+import re # For simple phone number formatting
 
+# --- Mock Data (Simulating NIBSS/NIMC databases) ---
+MOCK_BVN_DB = {
+    "12345678901": {"bvn": "12345678901", "firstName": "Adewale", "lastName": "Ogunseye", "dateOfBirth": "1990-01-15", "phoneNumber": "08012345678", "registrationDate": "2015-03-10"},
+    "11223344556": {"bvn": "11223344556", "firstName": "Bola", "lastName": "Adekunle", "dateOfBirth": "1985-05-20", "phoneNumber": "07098765432", "registrationDate": "2016-07-22"},
+    "98765432100": {"bvn": "98765432100", "firstName": "Chinedu", "lastName": "Okoro", "dateOfBirth": "1992-11-03", "phoneNumber": "09000000001", "registrationDate": "2017-01-05"},
+    "ERROR_BVN_001": {"error": "Simulated Service Unavailable"}, # For testing error handling
+}
+
+MOCK_NIN_DB = {
+    "98765432109": {"nin": "98765432109", "firstname": "Adewale", "surname": "Ogunseye", "middlename": "T.", "birthdate": "1990-01-15", "telephoneno": "2348012345678", "gender": "M"},
+    "88776655443": {"nin": "88776655443", "firstname": "Bola", "surname": "Adekunle", "middlename": "", "birthdate": "1985-05-20", "telephoneno": "2347098765432", "gender": "F"},
+    "77665544332": {"nin": "77665544332", "firstname": "Nonso", "surname": "Eze", "middlename": "C", "birthdate": "1988-08-10", "telephoneno": "2348123456789", "gender": "M"}, # Name mismatch example
+    "ERROR_NIN_001": {"error": "Simulated Service Down"}, # For testing error handling
+}
+
+# Helper to normalize phone numbers (very basic)
+def normalize_phone(phone: Optional[str]) -> Optional[str]:
+    if not phone:
+        return None
+    # Remove +234 and ensure it starts with 0
+    if phone.startswith("+234"):
+        phone = "0" + phone[4:]
+    elif phone.startswith("234"):
+        phone = "0" + phone[3:]
+    return re.sub(r'\D', '', phone) # Remove any non-digits just in case
+
+@tool("NINBVNVerificationTool")
+def nin_bvn_verification_tool(
+    bvn: Optional[str] = None,
+    nin: Optional[str] = None,
+    first_name: str = "",
+    last_name: str = "",
+    date_of_birth: str = "", # Expected format YYYY-MM-DD
+    phone_number: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Verifies BVN (Bank Verification Number) and/or NIN (National Identification Number)
+    against mock NIBSS/NIMC databases. It checks if the provided details (name, DOB, phone)
+    match the records associated with the BVN/NIN.
+
+    Args:
+        bvn (Optional[str]): The BVN to verify.
+        nin (Optional[str]): The NIN to verify.
+        first_name (str): Applicant's first name.
+        last_name (str): Applicant's last name.
+        date_of_birth (str): Applicant's date of birth in YYYY-MM-DD format.
+        phone_number (Optional[str]): Applicant's phone number.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing verification statuses and details for BVN and NIN.
+                        Keys include 'bvn_status', 'bvn_details', 'nin_status', 'nin_details'.
+                        Possible statuses: "Verified", "Not Found", "Mismatch", "Error", "NotProvided".
+    """
+    results = {
+        "bvn_status": "NotProvided", "bvn_details": {},
+        "nin_status": "NotProvided", "nin_details": {}
+    }
+
+    normalized_input_phone = normalize_phone(phone_number)
+
+    # --- BVN Verification ---
+    if bvn:
+        if bvn == "ERROR_BVN_001": # Simulate service error
+            results["bvn_status"] = "Error"
+            results["bvn_details"] = {"message": MOCK_BVN_DB[bvn]["error"]}
+        elif bvn in MOCK_BVN_DB:
+            bvn_record = MOCK_BVN_DB[bvn]
+            mismatches = []
+            if first_name.lower() != bvn_record["firstName"].lower():
+                mismatches.append(f"First name mismatch (Expected: {bvn_record['firstName']}, Got: {first_name})")
+            if last_name.lower() != bvn_record["lastName"].lower():
+                mismatches.append(f"Last name mismatch (Expected: {bvn_record['lastName']}, Got: {last_name})")
+            if date_of_birth != bvn_record["dateOfBirth"]:
+                mismatches.append(f"DOB mismatch (Expected: {bvn_record['dateOfBirth']}, Got: {date_of_birth})")
+
+            # Optional: Phone number check can be strict or lenient
+            bvn_phone_normalized = normalize_phone(bvn_record.get("phoneNumber"))
+            if normalized_input_phone and bvn_phone_normalized and normalized_input_phone != bvn_phone_normalized:
+                 mismatches.append(f"Phone number mismatch on BVN (Expected: {bvn_phone_normalized}, Got: {normalized_input_phone}) - this check can be optional")
+
+
+            if not mismatches:
+                results["bvn_status"] = "Verified"
+                results["bvn_details"] = {
+                    "message": "BVN details successfully matched.",
+                    "matched_data": bvn_record
+                }
+            else:
+                results["bvn_status"] = "Mismatch"
+                results["bvn_details"] = {
+                    "message": "Provided details do not fully match BVN record.",
+                    "mismatches": mismatches,
+                    "bvn_record_summary": {k:v for k,v in bvn_record.items() if k not in ['error']}
+                }
+        else:
+            results["bvn_status"] = "NotFound"
+            results["bvn_details"] = {"message": "BVN not found in mock database."}
+
+    # --- NIN Verification ---
+    if nin:
+        if nin == "ERROR_NIN_001": # Simulate service error
+            results["nin_status"] = "Error"
+            results["nin_details"] = {"message": MOCK_NIN_DB[nin]["error"]}
+        elif nin in MOCK_NIN_DB:
+            nin_record = MOCK_NIN_DB[nin]
+            mismatches = []
+            if first_name.lower() != nin_record["firstname"].lower():
+                mismatches.append(f"First name mismatch (Expected: {nin_record['firstname']}, Got: {first_name})")
+            if last_name.lower() != nin_record["surname"].lower():
+                mismatches.append(f"Last name mismatch (Expected: {nin_record['surname']}, Got: {last_name})")
+            if date_of_birth != nin_record["birthdate"]:
+                mismatches.append(f"DOB mismatch (Expected: {nin_record['birthdate']}, Got: {date_of_birth})")
+
+            nin_phone_normalized = normalize_phone(nin_record.get("telephoneno"))
+            if normalized_input_phone and nin_phone_normalized and normalized_input_phone != nin_phone_normalized:
+                 mismatches.append(f"Phone number mismatch on NIN (Expected: {nin_phone_normalized}, Got: {normalized_input_phone})")
+
+            if not mismatches:
+                results["nin_status"] = "Verified"
+                results["nin_details"] = {
+                    "message": "NIN details successfully matched.",
+                    "matched_data": nin_record
+                }
+            else:
+                results["nin_status"] = "Mismatch"
+                results["nin_details"] = {
+                    "message": "Provided details do not fully match NIN record.",
+                    "mismatches": mismatches,
+                    "nin_record_summary": {k:v for k,v in nin_record.items() if k not in ['error']}
+                }
+        else:
+            results["nin_status"] = "NotFound"
+            results["nin_details"] = {"message": "NIN not found in mock database."}
+
+    return results
+
+# Placeholder for other tools (OCRTool, FaceMatchTool) to be added later.
 # @tool("OCRTool")
-# def ocr_tool(document_url: str) -> dict:
-#     """
-#     Parses a document (ID card, utility bill) using OCR and returns extracted text.
-#     Input: URL of the document.
-#     Output: Dictionary containing extracted text or an error message.
-#     """
-#     print(f"OCR Tool: Processing document from {document_url}")
-#     # Placeholder for actual OCR implementation
-#     # response = requests.post("OCR_SERVICE_ENDPOINT", json={"url": document_url})
-#     # return response.json()
-#     return {"extracted_text": "Mock OCR text from " + document_url, "status": "success"}
-
+# ...
 
 # @tool("FaceMatchTool")
-# def face_match_tool(selfie_url: str, id_photo_url: str) -> dict:
-#     """
-#     Compares a selfie with a photo from an ID card using a face matching API.
-#     Input: URL of the selfie and URL of the ID photo.
-#     Output: Dictionary with match score and confidence.
-#     """
-#     print(f"Face Match Tool: Comparing {selfie_url} with {id_photo_url}")
-#     # Placeholder for actual face match API call (e.g., Smile Identity)
-#     # response = requests.post("FACE_MATCH_API_ENDPOINT", json={"selfie": selfie_url, "id_photo": id_photo_url})
-#     # return response.json()
-#     return {"match_score": 0.95, "confidence": "high", "status": "success"}
+# ...
+
+if __name__ == "__main__":
+    print("--- Testing NINBVNVerificationTool ---")
+
+    # Test Case 1: BVN Verified
+    print("\nTest Case 1: BVN Verified")
+    res1 = nin_bvn_verification_tool(bvn="12345678901", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="08012345678")
+    print(res1)
+
+    # Test Case 2: NIN Verified
+    print("\nTest Case 2: NIN Verified")
+    res2 = nin_bvn_verification_tool(nin="88776655443", first_name="Bola", last_name="Adekunle", date_of_birth="1985-05-20", phone_number="07098765432")
+    print(res2)
+
+    # Test Case 3: BVN Mismatch (name)
+    print("\nTest Case 3: BVN Mismatch (name)")
+    res3 = nin_bvn_verification_tool(bvn="12345678901", first_name="Adebayo", last_name="Ogunseye", date_of_birth="1990-01-15")
+    print(res3)
+
+    # Test Case 4: NIN Mismatch (name)
+    print("\nTest Case 4: NIN Mismatch (name)")
+    res4 = nin_bvn_verification_tool(nin="77665544332", first_name="Chijioke", last_name="Eze", date_of_birth="1988-08-10") # Correct is Nonso Eze
+    print(res4)
+
+    # Test Case 5: BVN Not Found
+    print("\nTest Case 5: BVN Not Found")
+    res5 = nin_bvn_verification_tool(bvn="00000000000", first_name="Unknown", last_name="Person", date_of_birth="2000-01-01")
+    print(res5)
+
+    # Test Case 6: NIN Not Found
+    print("\nTest Case 6: NIN Not Found")
+    res6 = nin_bvn_verification_tool(nin="00000000000", first_name="Unknown", last_name="Person", date_of_birth="2000-01-01")
+    print(res6)
+
+    # Test Case 7: Both BVN and NIN provided and verified
+    print("\nTest Case 7: Both BVN and NIN provided and verified")
+    res7 = nin_bvn_verification_tool(bvn="11223344556", nin="88776655443", first_name="Bola", last_name="Adekunle", date_of_birth="1985-05-20", phone_number="07098765432")
+    print(res7)
+
+    # Test Case 8: BVN Error Simulation
+    print("\nTest Case 8: BVN Error Simulation")
+    res8 = nin_bvn_verification_tool(bvn="ERROR_BVN_001", first_name="Test", last_name="Error", date_of_birth="1990-01-01")
+    print(res8)
+
+    # Test Case 9: NIN Error Simulation
+    print("\nTest Case 9: NIN Error Simulation")
+    res9 = nin_bvn_verification_tool(nin="ERROR_NIN_001", first_name="Test", last_name="Error", date_of_birth="1990-01-01")
+    print(res9)
+
+    # Test Case 10: Only one identifier provided (NIN)
+    print("\nTest Case 10: Only NIN provided")
+    res10 = nin_bvn_verification_tool(nin="98765432109", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="08012345678")
+    print(res10)
+
+    # Test Case 11: Phone number variations
+    print("\nTest Case 11: Phone number variations (NIN)")
+    res11_correct_phone = nin_bvn_verification_tool(nin="98765432109", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="+2348012345678")
+    print(f"With +234: {res11_correct_phone['nin_status']}")
+    res11_short_phone = nin_bvn_verification_tool(nin="98765432109", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="08012345678")
+    print(f"With 080: {res11_short_phone['nin_status']}")
+    res11_mismatch_phone = nin_bvn_verification_tool(nin="98765432109", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="08099999999")
+    print(f"Mismatch phone: {res11_mismatch_phone['nin_status']}, Details: {res11_mismatch_phone['nin_details'].get('mismatches')}")
 
 
-# @tool("NINBVNVerificationTool")
-# def nin_bvn_verification_tool(bvn: str = None, nin: str = None) -> dict:
-#     """
-#     Verifies BVN (Bank Verification Number) or NIN (National Identification Number)
-#     through the appropriate Nigerian authorities (NIBSS/CoreID).
-#     Input: BVN string or NIN string.
-#     Output: Dictionary with verification status and details.
-#     """
-#     if bvn:
-#         print(f"NIN/BVN Tool: Verifying BVN {bvn}")
-#         # Placeholder for NIBSS BVN API call
-#         # response = requests.post("NIBSS_BVN_API_ENDPOINT", json={"bvn": bvn})
-#         # return response.json()
-#         return {"bvn_status": "verified", "details": {"name": "John Doe", "dob": "1990-01-01"}, "status": "success"}
-#     elif nin:
-#         print(f"NIN/BVN Tool: Verifying NIN {nin}")
-#         # Placeholder for NIMC NIN API call
-#         # response = requests.post("NIMC_NIN_API_ENDPOINT", json={"nin": nin})
-#         # return response.json()
-#         return {"nin_status": "verified", "details": {"name": "John Doe", "address": "123 Main St"}, "status": "success"}
-#     return {"error": "BVN or NIN must be provided", "status": "failure"}
+@tool("OCRTool")
+def ocr_tool(document_url: HttpUrl, document_type: str) -> Dict[str, Any]:
+    """
+    Simulates OCR processing for a given document URL and type.
+    In a real scenario, this tool would download the document and use an OCR engine
+    (e.g., Tesseract, AWS Textract, Google Vision API) to extract text and structured data.
 
-# List of tools for this agent
-# tools = [ocr_tool, face_match_tool, nin_bvn_verification_tool]
+    Args:
+        document_url (HttpUrl): The URL of the document to process.
+        document_type (str): The type of document (e.g., "NationalID", "DriversLicense",
+                             "Passport", "UtilityBill"). This helps in guiding data extraction.
 
-print("Customer Onboarding Agent tools placeholder.")
+    Returns:
+        Dict[str, Any]: A dictionary with 'status' ("Success", "Failed") and 'extracted_data'.
+                        'extracted_data' is a mock dictionary of data typically found on the document.
+    """
+    print(f"OCRTool: Processing document '{document_url}' of type '{document_type}'")
+    # Simulate success/failure
+    if "error" in str(document_url).lower():
+        return {"status": "Failed", "error_message": "Simulated OCR processing error (e.g., unreadable document).", "extracted_data": None}
+
+    mock_data = {"document_url": str(document_url), "document_type": document_type}
+    if document_type == "NationalID": # Example for Nigerian National ID Card (NIN slip or card)
+        mock_data.update({
+            "surname": "Ogunseye" if "ogunseye" in str(document_url).lower() else "Doe",
+            "first_name": "Adewale" if "adewale" in str(document_url).lower() else "John",
+            "middle_name": "T." if "adewale" in str(document_url).lower() else "",
+            "nin": nin if (nin := re.search(r'(\d{11})', str(document_url))) else "1234567890X", # Extract if present in URL for mock
+            "date_of_birth": "1990-01-15",
+            "gender": "Male",
+            "address": "10, Unity Road, Ikeja, Lagos",
+            "issue_date": "2021-05-10",
+            "expiry_date": "N/A" # if it's a NIN slip
+        })
+    elif document_type == "DriversLicense":
+        mock_data.update({
+            "license_no": f"DL{random.randint(10000,99999)}",
+            "surname": "Adekunle",
+            "first_name": "Bola",
+            "date_of_birth": "1985-05-20",
+            "issue_date": "2022-01-15",
+            "expiry_date": "2027-01-14",
+            "categories": "B, C1"
+        })
+    elif document_type == "Passport": # International Passport
+        mock_data.update({
+            "passport_no": f"P{random.randint(10000000,99999999)}",
+            "surname": "Okoro",
+            "given_names": "Chinedu Emeka",
+            "nationality": "Nigerian",
+            "date_of_birth": "1992-11-03",
+            "sex": "M",
+            "place_of_birth": "Enugu",
+            "date_of_issue": "2020-03-01",
+            "date_of_expiry": "2025-02-28",
+            "issuing_authority": "Nigerian Immigration Service"
+        })
+    elif document_type == "UtilityBill": # e.g., Electricity bill (NEPA/PHCN)
+        mock_data.update({
+            "account_name": "Mr. Adewale Ogunseye",
+            "address": "10, Unity Road, Ikeja, Lagos", # Should match address being verified
+            "biller": "Ikeja Electric",
+            "bill_date": "2023-09-25",
+            "due_date": "2023-10-15",
+            "amount_due_ngn": random.uniform(3000, 15000)
+        })
+    else:
+        mock_data.update({"raw_text": f"Mock OCR text extracted from {document_type} at {document_url}. Content is generic."})
+
+    return {"status": "Success", "extracted_data": mock_data}
+
+
+@tool("FaceMatchTool")
+def face_match_tool(selfie_url: HttpUrl, id_photo_url: HttpUrl) -> Dict[str, Any]:
+    """
+    Simulates a face matching process between a selfie and a photo from an ID document.
+    In a real scenario, this would use a face recognition service (e.g., AWS Rekognition, Azure Face API, Smile Identity).
+
+    Args:
+        selfie_url (HttpUrl): URL of the customer's selfie.
+        id_photo_url (HttpUrl): URL of the photo extracted from their ID document (e.g., by OCRTool or a separate step).
+
+    Returns:
+        Dict[str, Any]: A dictionary containing 'status', 'is_match' (bool), 'match_score' (float),
+                        and 'confidence' (str: "High", "Medium", "Low").
+    """
+    print(f"FaceMatchTool: Comparing selfie '{selfie_url}' with ID photo '{id_photo_url}'")
+
+    if "error" in str(selfie_url).lower() or "error" in str(id_photo_url).lower():
+        return {"status": "Failed", "error_message": "Simulated error processing one of the images.", "is_match": False, "match_score": 0.0, "confidence": "Low"}
+
+    # Simulate varying match scores
+    # If names in URLs (purely for mock) suggest a match, give higher score
+    score = random.uniform(0.60, 0.98) # Base score
+    if any(name in str(selfie_url).lower() for name in ["adewale", "bola", "chinedu"]):
+        if any(name in str(id_photo_url).lower() for name in ["adewale", "bola", "chinedu"]):
+             if str(selfie_url).split('/')[-1].split('.')[0] == str(id_photo_url).split('/')[-1].split('.')[0]: # crude name match
+                 score = random.uniform(0.85, 0.99)
+
+    is_match = score >= 0.75 # Example threshold for a match
+
+    confidence = "Low"
+    if score > 0.90:
+        confidence = "High"
+    elif score > 0.70:
+        confidence = "Medium"
+
+    return {
+        "status": "Success",
+        "is_match": is_match,
+        "match_score": round(score, 4),
+        "confidence": confidence,
+        "message": f"Face match score: {score:.4f}. Confidence: {confidence}. Match: {is_match}."
+    }
+
+
+if __name__ == "__main__":
+    print("--- Testing NINBVNVerificationTool ---")
+    # (Keep existing NINBVNVerificationTool tests)
+    res1 = nin_bvn_verification_tool(bvn="12345678901", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="08012345678")
+    print(f"NINBVN Test 1: {res1['bvn_status']}")
+
+
+    print("\n--- Testing OCRTool ---")
+    ocr_id_res = ocr_tool(document_url=HttpUrl("http://example.com/docs/ogunseye_national_id.jpg"), document_type="NationalID")
+    print(f"OCR NationalID: {ocr_id_res['status']}, Data: {ocr_id_res.get('extracted_data',{}).get('nin')}")
+
+    ocr_bill_res = ocr_tool(document_url=HttpUrl("http://example.com/docs/utility_bill_adewale.pdf"), document_type="UtilityBill")
+    print(f"OCR UtilityBill: {ocr_bill_res['status']}, Biller: {ocr_bill_res.get('extracted_data',{}).get('biller')}")
+
+    ocr_error_res = ocr_tool(document_url=HttpUrl("http://example.com/docs/error_document.tiff"), document_type="Passport")
+    print(f"OCR Error: {ocr_error_res['status']}, Message: {ocr_error_res.get('error_message')}")
+
+    print("\n--- Testing FaceMatchTool ---")
+    face_match_res_good = face_match_tool(selfie_url=HttpUrl("http://example.com/photos/adewale_selfie.jpg"), id_photo_url=HttpUrl("http://example.com/photos/adewale_id_photo.png"))
+    print(f"Face Match (Good): {face_match_res_good['status']}, Match: {face_match_res_good['is_match']}, Score: {face_match_res_good['match_score']}")
+
+    face_match_res_poor = face_match_tool(selfie_url=HttpUrl("http://example.com/photos/person_x_selfie.jpg"), id_photo_url=HttpUrl("http://example.com/photos/person_y_id_photo.png"))
+    print(f"Face Match (Poor): {face_match_res_poor['status']}, Match: {face_match_res_poor['is_match']}, Score: {face_match_res_poor['match_score']}")
+
+    face_match_error_res = face_match_tool(selfie_url=HttpUrl("http://example.com/photos/error_selfie.jpg"), id_photo_url=HttpUrl("http://example.com/photos/some_id.png"))
+    print(f"Face Match (Error): {face_match_error_res['status']}, Message: {face_match_error_res.get('error_message')}")
+
+    print("\nCustomer Onboarding Agent tools (NINBVN, OCR, FaceMatch implemented with mocks).")
