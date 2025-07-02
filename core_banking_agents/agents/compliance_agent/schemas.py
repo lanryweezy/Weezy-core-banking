@@ -1,69 +1,107 @@
 # Pydantic schemas for Compliance Agent
 
-from pydantic import BaseModel, Field, HttpUrl
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field, HttpUrl, EmailStr
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime, date
+import uuid
 
-class EntityInfo(BaseModel):
-    entity_id: str = Field(..., example="CUST00123")
-    name: str = Field(..., example="Acme Trading Ltd.")
-    entity_type: str = Field(..., example="organization") # individual, organization
-    date_of_birth_or_incorporation: Optional[date] = Field(None, example="2005-10-15")
-    nationality_or_jurisdiction: Optional[str] = Field(None, example="NG")
-    addresses: Optional[List[str]] = Field(None, example=["123 Main St, Lagos", "456 Business Ave, Abuja"])
-    related_parties: Optional[List[str]] = Field(None, example=["John Doe (Director)", "Jane Smith (UBO)"])
+# --- Enums and Helper Models ---
+EntityType = Literal["Individual", "Organization"]
+ScreeningCheckType = Literal["Sanctions", "PEP", "AdverseMedia", "InternalWatchlist"]
+ScreeningStatus = Literal["Pending", "Clear", "PotentialHit", "ConfirmedHit", "Error"]
+RiskRating = Literal["Low", "Medium", "High", "Critical"]
 
-class TransactionInfo(BaseModel):
-    transaction_id: str = Field(..., example="TXNCOMP001")
-    amount: float = Field(..., example=15000000.00)
-    currency: str = Field("NGN", example="NGN")
-    transaction_date: datetime = Field(default_factory=datetime.now)
-    description: Optional[str] = Field(None, example="Payment for services")
-    source_entity_id: Optional[str] = Field(None, example="CUST00123")
-    destination_entity_id: Optional[str] = Field(None, example="CUST00456")
-    destination_jurisdiction: Optional[str] = Field(None, example="US")
+class EntityToScreen(BaseModel):
+    entity_id: str = Field(default_factory=lambda: f"ENT-{uuid.uuid4().hex[:10].upper()}", description="A unique ID for this entity within the request or system.")
+    entity_type: EntityType
+    name: str = Field(..., example="Victor 'The Phantom' Zakhaev") # Full name for individual, registered name for org
 
-class ComplianceCheckRequest(BaseModel):
-    entity_info: Optional[EntityInfo] = None
-    transaction_info: Optional[TransactionInfo] = None
-    check_types: List[str] = Field(..., example=["sanctions", "aml_rules", "internal_policy"]) # "pep", "adverse_media"
+    # Individual-specific
+    date_of_birth: Optional[date] = Field(None, example="1970-01-15")
+    nationality: Optional[str] = Field(None, example="RU") # ISO 3166-1 alpha-2 codes
+    id_numbers: Optional[List[Dict[str, str]]] = Field(None, example=[{"type": "Passport", "value": "P12345RU"}])
 
-class SanctionMatch(BaseModel):
-    list_name: str = Field(..., example="OFAC SDN List")
-    matched_name: str = Field(..., example="Acme Trading")
-    match_score: Optional[float] = Field(None, example=0.92)
-    details_url: Optional[HttpUrl] = Field(None)
+    # Organization-specific
+    registration_number: Optional[str] = Field(None, example="RC123456")
+    country_of_incorporation: Optional[str] = Field(None, example="NG")
 
-class AMLRuleViolation(BaseModel):
-    rule_id: str = Field(..., example="CTR_NGN_001")
-    description: str = Field(..., example="Exceeds Currency Transaction Reporting threshold for NGN.")
-    severity: str = Field("High", example="Medium") # Low, Medium, High
+    # Common
+    addresses: Optional[List[str]] = Field(None, example=["10 Downing Street, London, UK", "Unknown Hideout, Siberia"])
+    aliases: Optional[List[str]] = Field(None, example=["The Phantom", "Viktor Z."])
+    source_of_information: Optional[str] = Field(None, example="New Customer Onboarding: ONB-123")
 
-class ComplianceReport(BaseModel):
-    report_id: str = Field(..., example="COMPREP20231027XYZ")
-    entity_id_checked: Optional[str] = None
-    transaction_id_checked: Optional[str] = None
-    check_timestamp: datetime = Field(default_factory=datetime.now)
-    overall_risk_assessment: str = Field(..., example="High Risk") # Low, Medium, High, Clear
-    sanctions_matches: List[SanctionMatch] = []
-    aml_violations: List[AMLRuleViolation] = []
-    other_flags: Optional[List[str]] = Field(None)
-    summary: Optional[str] = Field(None, example="Entity matched on sanctions list and triggered CTR.")
-    recommended_actions: Optional[List[str]] = Field(None, example=["File SAR", "Freeze account pending investigation"])
+    # Ensure either DOB/Nationality (for Individual) or RegNo/Country (for Org) is somewhat present if type matches
+    # More complex validation can be added with @validator if needed.
 
-class SARInput(BaseModel):
-    case_id: str = Field(..., example="CASE20231027-003")
-    summary_of_suspicion: str = Field(..., example="Multiple large cash deposits followed by immediate international transfers to high-risk jurisdiction.")
-    subject_entity: EntityInfo
-    related_transactions: List[TransactionInfo]
-    additional_narrative: Optional[str] = Field(None)
+class ScreeningRequest(BaseModel):
+    request_id: str = Field(default_factory=lambda: f"SCRREQ-{uuid.uuid4().hex[:10].upper()}")
+    entities_to_screen: List[EntityToScreen] = Field(..., min_length=1) # min_items for older Pydantic
+    checks_to_perform: List[ScreeningCheckType] = Field(..., example=["Sanctions", "PEP"])
+    requestor_id: Optional[str] = Field(None, example="OnboardingAgent_ProcessXYZ") # Who initiated this
+    reason_for_screening: Optional[str] = Field(None, example="New customer KYC")
 
-class AuditLogEntry(BaseModel):
-    log_id: str
-    timestamp: datetime
-    agent_id: str = Field("ComplianceAgent")
-    action: str # e.g., "SCREEN_ENTITY", "GENERATE_SAR_DRAFT"
-    target_id: str # e.g., customer_id, transaction_id, case_id
-    details: Dict[str, Any]
+# --- Response Models ---
+class ScreeningHitDetails(BaseModel):
+    list_name: str = Field(..., example="UN Consolidated Sanctions List")
+    matched_name: str = Field(..., example="Viktor Zakhaev")
+    match_strength: Optional[float] = Field(None, ge=0, le=1, example=0.95)
+    hit_reason: Optional[str] = Field(None, example="Association with terrorist financing activities.")
+    source_url: Optional[HttpUrl] = Field(None, example="https://scsanctions.un.org/viktor-zakhaev")
+    additional_match_info: Optional[Dict[str, Any]] = None
 
-print("Compliance Agent Pydantic schemas placeholder.")
+class ScreeningResult(BaseModel):
+    entity_id: str # From EntityToScreen
+    input_name: str # Name provided in the request for this entity
+    screening_status: ScreeningStatus = "Pending"
+    overall_risk_rating: Optional[RiskRating] = None # Determined after all checks
+    hits: Optional[List[ScreeningHitDetails]] = None
+    errors: Optional[List[str]] = None # Errors specific to this entity's screening
+    summary_message: Optional[str] = "Screening initiated."
+    last_checked_at: Optional[datetime] = None
+
+class ScreeningResponse(BaseModel):
+    request_id: str # From ScreeningRequest
+    response_timestamp: datetime = Field(default_factory=datetime.utcnow)
+    overall_status: Literal["Pending", "Completed", "PartiallyCompleted", "Failed"] = "Pending"
+    results_per_entity: List[ScreeningResult]
+
+# --- SAR (Suspicious Activity Report) Data Input (Placeholder) ---
+class SARDataInput(BaseModel):
+    sar_id: Optional[str] = Field(None, description="System generated ID if creating new")
+    case_reference_id: str = Field(..., example="ALERT-001-TXN-FRD", description="Link to internal case or alert")
+    reporting_officer_id: str = Field(..., example="MLRO_JANE_DOE")
+    date_of_suspicion: date = Field(..., example="2023-10-28")
+    suspicion_summary: str = Field(..., example="Series of large, structured cash deposits followed by rapid international transfers to a high-risk jurisdiction by customer CUST-XYZ.")
+    subject_entities: List[EntityToScreen] # Details of involved parties
+    related_transaction_ids: Optional[List[str]] = None
+    # ... more fields as per NFIU goAML requirements
+    narrative: str = Field(..., description="Detailed narrative of the suspicious activity.")
+
+
+if __name__ == "__main__":
+    import json
+    print("--- EntityToScreen Schema ---")
+    print(json.dumps(EntityToScreen.model_json_schema(), indent=2))
+    print("\n--- ScreeningRequest Schema ---")
+    print(json.dumps(ScreeningRequest.model_json_schema(), indent=2))
+    print("\n--- ScreeningResponse Schema ---")
+    print(json.dumps(ScreeningResponse.model_json_schema(), indent=2))
+    print("\n--- SARDataInput Schema (Placeholder) ---")
+    print(json.dumps(SARDataInput.model_json_schema(), indent=2))
+
+    # Example Instantiation
+    # try:
+    #     entity1 = EntityToScreen(entity_type="Individual", name="John Doe", date_of_birth="1980-01-01", nationality="NG")
+    #     entity2 = EntityToScreen(entity_type="Organization", name="Acme Corp Ltd", registration_number="RC009988", country_of_incorporation="NG")
+    #     req = ScreeningRequest(entities_to_screen=[entity1, entity2], checks_to_perform=["Sanctions", "PEP"])
+    #     print("\nValid ScreeningRequest instance:\n", req.model_dump_json(indent=2))
+
+    #     res_entity1 = ScreeningResult(entity_id=entity1.entity_id, input_name=entity1.name, screening_status="Clear", overall_risk_rating="Low")
+    #     hit_detail = ScreeningHitDetails(list_name="Mock Watchlist", matched_name="Acme Corp", hit_reason="Adverse media regarding director.")
+    #     res_entity2 = ScreeningResult(entity_id=entity2.entity_id, input_name=entity2.name, screening_status="PotentialHit", overall_risk_rating="Medium", hits=[hit_detail])
+    #     resp = ScreeningResponse(request_id=req.request_id, overall_status="Completed", results_per_entity=[res_entity1, res_entity2])
+    #     print("\nValid ScreeningResponse instance:\n", resp.model_dump_json(indent=2))
+
+    # except Exception as e:
+    #     print("\nError during schema instantiation example:", e)
+    pass
