@@ -3,17 +3,45 @@ from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Depends
 from typing import Dict, Any
 from datetime import datetime
 import logging
+from contextlib import asynccontextmanager # For lifespan events
 
 from .schemas import OnboardingRequest, OnboardingStatusResponse, OnboardingProcess, VerificationStepResult, VerificationStatus, AccountTier
 # Import agent interaction logic
 from .agent import start_onboarding_process, get_onboarding_status_from_agent
+# Import core database utility
+from ...core.database import init_db as initialize_core_database, engine as core_engine # Aliased & import engine for check
 
 # --- Logging Setup ---
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Ensure basicConfig is called only once, typically at a higher level or managed by Uvicorn
+if not logger.handlers: # Avoid adding multiple handlers if uvicorn already configured root logger
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # --- In-memory Store (Mock Database) ---
-MOCK_ONBOARDING_DB: Dict[str, OnboardingProcess] = {}
+MOCK_ONBOARDING_DB: Dict[str, OnboardingProcess] = {} # This will be replaced by DB interaction eventually
+
+
+# --- FastAPI Lifespan Event Handler ---
+@asynccontextmanager
+async def lifespan(app_lifespan: FastAPI): # Parameter name changed to avoid conflict with app instance
+    # Code to run on startup
+    logger.info("Customer Onboarding Agent API starting up...")
+    if core_engine is not None: # Check if database engine was successfully initialized in core.database
+        logger.info("Attempting to initialize database schema via core.database.init_db()...")
+        try:
+            # Call init_db to ensure tables are created (idempotent if tables exist)
+            # In a multi-service setup, only one service or a dedicated script should ideally handle schema creation.
+            # For this trial, this agent's startup will attempt it.
+            initialize_core_database(attempt_create_all=True)
+            logger.info("Database initialization attempt complete from Onboarding Agent startup.")
+        except Exception as e:
+            logger.error(f"Error during database initialization on startup: {e}", exc_info=True)
+            # Depending on policy, might want to prevent app startup if DB is critical and init fails
+    else:
+        logger.warning("Core database engine is not available. Skipping schema initialization on startup.")
+    yield
+    # Code to run on shutdown
+    logger.info("Customer Onboarding Agent API shutting down...")
 
 
 # --- Background Task Runner ---
@@ -67,11 +95,8 @@ async def run_agent_workflow_background(onboarding_id: str, process: OnboardingP
             process.status = "RequiresManualIntervention" # type: ignore
             process.message = f"An critical error occurred during agent processing: {str(e)}"
             process.last_updated_at = datetime.utcnow()
-            # Clear out steps as they might be inconsistent
-            # process.verification_steps = [] # Or mark all as error
-            for step in process.verification_steps:
+            for step in process.verification_steps: # Mark steps as error
                 step.status = VerificationStatus(status="Error", message="Agent processing failed")
-
             MOCK_ONBOARDING_DB[onboarding_id] = process
             logger.info(f"Onboarding process {onboarding_id} status updated to RequiresManualIntervention due to agent error.")
 
@@ -80,14 +105,15 @@ async def run_agent_workflow_background(onboarding_id: str, process: OnboardingP
 app = FastAPI(
     title="Customer Onboarding Agent API",
     description="Handles KYC, verification, and account creation for new bank customers using CrewAI.",
-    version="0.1.3", # Incremented version
+    version="0.1.4", # Incremented version
     contact={
         "name": "Core Banking AI Team",
         "email": "ai-devs@examplebank.ng",
     },
     license_info={
         "name": "Proprietary",
-    }
+    },
+    lifespan=lifespan # Added lifespan manager
 )
 
 # --- API Endpoints ---
@@ -95,7 +121,7 @@ app = FastAPI(
 async def root():
     """Root endpoint for the Customer Onboarding Agent. Provides basic status."""
     logger.info("Root endpoint accessed.")
-    return {"message": "Customer Onboarding Agent is running. CrewAI integration active (mocked). See /docs for API details."}
+    return {"message": "Customer Onboarding Agent is running. CrewAI integration active (mocked). DB init on startup. See /docs."}
 
 @app.post("/onboardings/", response_model=OnboardingStatusResponse, status_code=status.HTTP_202_ACCEPTED, tags=["Onboarding"])
 async def initiate_onboarding_endpoint(request: OnboardingRequest, background_tasks: BackgroundTasks):
@@ -106,7 +132,6 @@ async def initiate_onboarding_endpoint(request: OnboardingRequest, background_ta
     logger.info(f"Received onboarding request for: {request.first_name} {request.last_name}, Tier: {request.requested_account_tier.tier}")
 
     try:
-        # Initial process state before agent runs
         initial_verification_steps = [
             VerificationStepResult(step_name="BVNVerification"),
             VerificationStepResult(step_name="NINVerification"),
@@ -157,6 +182,8 @@ async def get_onboarding_status_endpoint(onboarding_id: str):
 
 # --- Main block for Uvicorn ---
 if __name__ == "__main__":
+    if not logger.handlers:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger.info("Customer Onboarding Agent FastAPI application. To run, use Uvicorn from project root:")
     logger.info("`uvicorn core_banking_agents.agents.customer_onboarding_agent.main:app --reload --port 8001`")
     pass
