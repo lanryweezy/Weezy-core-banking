@@ -454,4 +454,169 @@ if __name__ == "__main__":
     print(f"AML Error: {aml_error}")
 
 
-    print("\nCustomer Onboarding Agent tools (NINBVN, OCR, FaceMatch, AMLScreening implemented with mocks).")
+@tool("DocumentValidationTool")
+def document_validation_tool(document_url: HttpUrl, document_type: str, ocr_extracted_data: Dict[str, Any], applicant_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Simulates validation of a document's authenticity and consistency with OCR data and applicant details.
+    Performs mock checks like format validation, consistency with applicant data, and basic fraud checks.
+
+    Args:
+        document_url (HttpUrl): URL of the document.
+        document_type (str): Type of the document (e.g., "NationalID", "UtilityBill").
+        ocr_extracted_data (Dict[str, Any]): Data extracted by the OCRTool from this document.
+        applicant_data (Optional[Dict[str, Any]]): Provided applicant data for cross-referencing
+                                                   (e.g., {'first_name': 'Adewale', 'last_name': 'Ogunseye', 'address': '...'}).
+
+    Returns:
+        Dict[str, Any]: With 'validation_status' ("Valid", "Suspicious", "Invalid", "Error"),
+                        'validation_checks_passed': List[str] of checks that passed.
+                        'validation_issues': List[str] of issues found.
+    """
+    logger.info(f"DocumentValidationTool: Validating doc type '{document_type}' from '{document_url}' with OCR data.")
+
+    status: Literal["Valid", "Suspicious", "Invalid", "Error"] = "Valid" # type: ignore
+    checks_passed: List[str] = []
+    issues: List[str] = []
+
+    if not ocr_extracted_data or ocr_extracted_data.get("status") == "Failed": # Assuming OCR tool sets a status
+        return {"validation_status": "Error", "validation_checks_passed": [], "validation_issues": ["Prerequisite OCR data missing or failed."]}
+
+    # Common checks
+    if "mock_tampered_document" in str(document_url):
+        issues.append("Document appears to be tampered (simulated).")
+        status = "Invalid"
+    else:
+        checks_passed.append("Basic integrity check (simulated no obvious tampering).")
+
+    # Type-specific checks
+    if document_type == "NationalID":
+        if ocr_extracted_data.get("nin") and len(ocr_extracted_data.get("nin", "")) == 11:
+            checks_passed.append("NIN format appears valid.")
+        else:
+            issues.append(f"NIN format invalid or missing from OCR: {ocr_extracted_data.get('nin')}")
+            status = "Suspicious"
+        if applicant_data:
+            if ocr_extracted_data.get("first_name","").lower() != applicant_data.get("first_name","").lower():
+                issues.append(f"First name on ID ('{ocr_extracted_data.get('first_name')}') does not match applicant ('{applicant_data.get('first_name')}').")
+                status = "Suspicious"
+            else:
+                checks_passed.append("First name on ID matches applicant data.")
+            if ocr_extracted_data.get("date_of_birth","") != applicant_data.get("date_of_birth",""):
+                issues.append(f"DOB on ID ('{ocr_extracted_data.get('date_of_birth')}') does not match applicant ('{applicant_data.get('date_of_birth')}').")
+                status = "Suspicious"
+            else:
+                checks_passed.append("DOB on ID matches applicant data.")
+
+    elif document_type == "UtilityBill":
+        if not ocr_extracted_data.get("address"):
+            issues.append("Address not found on utility bill OCR data.")
+            status = "Suspicious"
+        elif applicant_data and applicant_data.get("street_address"):
+            # Simple mock address check: check for street number and a common part of the street name
+            applicant_addr_parts = applicant_data.get("street_address","").lower().split()
+            ocr_addr_parts = ocr_extracted_data.get("address","").lower().split()
+            if not (any(p.isdigit() for p in ocr_addr_parts) and # has a number
+                    len(set(applicant_addr_parts) & set(ocr_addr_parts)) > 1): # some common words
+                issues.append(f"Address on utility bill ('{ocr_extracted_data.get('address')}') seems inconsistent with applicant's address ('{applicant_data.get('street_address')}').")
+                status = "Suspicious"
+            else:
+                checks_passed.append("Address on utility bill appears consistent with applicant data.")
+        else:
+            checks_passed.append("Utility bill contains an address (basic check).")
+
+        bill_date_str = ocr_extracted_data.get("bill_date")
+        if bill_date_str:
+            try:
+                bill_date = datetime.strptime(bill_date_str, "%Y-%m-%d").date()
+                if (datetime.now().date() - bill_date).days > 180: # e.g., older than ~6 months
+                    issues.append(f"Utility bill is too old (Date: {bill_date_str}).")
+                    status = "Suspicious"
+                else:
+                    checks_passed.append("Utility bill date is recent.")
+            except ValueError:
+                issues.append(f"Could not parse utility bill date: {bill_date_str}.")
+                status = "Suspicious"
+        else:
+            issues.append("Utility bill date missing from OCR.")
+            status = "Suspicious"
+
+    if status == "Valid" and issues: # If minor issues were raised but not enough to change status
+        status = "Suspicious"
+
+    return {
+        "validation_status": status,
+        "validation_checks_passed": checks_passed,
+        "validation_issues": issues,
+        "document_details_validated": {"url": str(document_url), "type": document_type}
+    }
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO) # Ensure logger is configured for tool's prints
+    print("--- Testing NINBVNVerificationTool ---")
+    # (Keep existing NINBVNVerificationTool tests)
+    res1 = nin_bvn_verification_tool(bvn="12345678901", first_name="Adewale", last_name="Ogunseye", date_of_birth="1990-01-15", phone_number="08012345678")
+    print(f"NINBVN Test 1: {res1['bvn_status']}")
+
+
+    print("\n--- Testing OCRTool ---")
+    # (Keep existing OCRTool tests)
+    ocr_id_res_data = {"document_url": "http://example.com/docs/ogunseye_national_id.jpg", "document_type": "NationalID"}
+    ocr_id_res = ocr_tool.run(ocr_id_res_data)
+    print(f"OCR NationalID: {ocr_id_res['status']}")
+
+
+    print("\n--- Testing FaceMatchTool ---")
+    # (Keep existing FaceMatchTool tests)
+    face_match_res_good = face_match_tool(selfie_url=HttpUrl("http://example.com/photos/adewale_selfie.jpg"), id_photo_url=HttpUrl("http://example.com/photos/adewale_id_photo.png"))
+    print(f"Face Match (Good): {face_match_res_good['is_match']}")
+
+    print("\n--- Testing AMLScreeningTool ---")
+    # (Keep existing AMLScreeningTool tests)
+    aml_clear = aml_screening_tool(full_name="Adaobi Chidinma", date_of_birth="1995-03-10", nationality="NG")
+    print(f"AML Clear: {aml_clear['status']}")
+
+    print("\n--- Testing DocumentValidationTool ---")
+    applicant_sample_data = {"first_name": "Adewale", "last_name": "Ogunseye", "date_of_birth": "1990-01-15", "street_address": "10, Unity Road, Ikeja, Lagos"}
+
+    # Valid ID
+    ocr_data_valid_id = {"status": "Success", "first_name": "Adewale", "date_of_birth": "1990-01-15", "nin": "12345678901"}
+    val_res_id_good = document_validation_tool.run({
+        "document_url": HttpUrl("http://example.com/id_good.jpg"), "document_type": "NationalID",
+        "ocr_extracted_data": ocr_data_valid_id, "applicant_data": applicant_sample_data
+    })
+    print(f"ID Validation (Good): {val_res_id_good['validation_status']}, Issues: {val_res_id_good['validation_issues']}")
+
+    # Suspicious ID (name mismatch)
+    ocr_data_mismatch_id = {"status": "Success", "first_name": "Bayo", "date_of_birth": "1990-01-15", "nin": "12345678901"}
+    val_res_id_mismatch = document_validation_tool.run({
+        "document_url": HttpUrl("http://example.com/id_mismatch.jpg"), "document_type": "NationalID",
+        "ocr_extracted_data": ocr_data_mismatch_id, "applicant_data": applicant_sample_data
+    })
+    print(f"ID Validation (Mismatch): {val_res_id_mismatch['validation_status']}, Issues: {val_res_id_mismatch['validation_issues']}")
+
+    # Valid Utility Bill
+    ocr_data_valid_bill = {"status": "Success", "address": "10, Unity Road, Ikeja", "bill_date": datetime.now().strftime("%Y-%m-%d")}
+    val_res_bill_good = document_validation_tool.run({
+        "document_url": HttpUrl("http://example.com/bill_good.pdf"), "document_type": "UtilityBill",
+        "ocr_extracted_data": ocr_data_valid_bill, "applicant_data": applicant_sample_data
+    })
+    print(f"Utility Bill Validation (Good): {val_res_bill_good['validation_status']}, Issues: {val_res_bill_good['validation_issues']}")
+
+    # Suspicious Utility Bill (old)
+    ocr_data_old_bill = {"status": "Success", "address": "10, Unity Road", "bill_date": "2022-01-01"}
+    val_res_bill_old = document_validation_tool.run({
+        "document_url": HttpUrl("http://example.com/bill_old.pdf"), "document_type": "UtilityBill",
+        "ocr_extracted_data": ocr_data_old_bill, "applicant_data": applicant_sample_data
+    })
+    print(f"Utility Bill Validation (Old): {val_res_bill_old['validation_status']}, Issues: {val_res_bill_old['validation_issues']}")
+
+    # Invalid (tampered)
+    val_res_tampered = document_validation_tool.run({
+        "document_url": HttpUrl("http://example.com/mock_tampered_document.jpg"), "document_type": "NationalID",
+        "ocr_extracted_data": ocr_data_valid_id, "applicant_data": applicant_sample_data
+    })
+    print(f"Tampered Doc Validation: {val_res_tampered['validation_status']}, Issues: {val_res_tampered['validation_issues']}")
+
+
+    print("\nCustomer Onboarding Agent tools (NINBVN, OCR, FaceMatch, AMLScreening, DocumentValidation implemented with mocks).")
