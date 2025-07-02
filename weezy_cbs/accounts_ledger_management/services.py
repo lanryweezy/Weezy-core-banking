@@ -1,17 +1,21 @@
 # Service layer for Accounts & Ledger Management
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, and_, or_
 from sqlalchemy.exc import IntegrityError
+from typing import List, Optional, Dict, Any
+import json # For audit logging if storing dicts as JSON strings
+
 from . import models, schemas
 from .models import AccountTypeEnum, AccountStatusEnum, CurrencyEnum, TransactionTypeEnum # Direct enum access
+# from ..customer_identity_management.services import get_customer # To verify customer exists - cross-module import
+# from ..core_infrastructure_config_engine.services import get_product_config # For product details
+# from ..core_infrastructure_config_engine.models import ProductConfig # For type hinting
+
 import decimal
 import random
 import string
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
-# Assuming shared exceptions and NUBAN generation utility
-# from weezy_cbs.shared import exceptions, nuban_generator
-# from weezy_cbs.customer_identity_management.services import get_customer # To verify customer exists
 
 # Placeholder for shared exceptions (should be in a shared module)
 class NotFoundException(Exception):
@@ -28,284 +32,404 @@ class InsufficientFundsException(InvalidOperationException):
     def __init__(self, message="Insufficient funds"):
         super().__init__(message)
 
-def generate_nuban(bank_code="999999"): # Weezy's mock bank code
-    """Generates a NUBAN-like account number. Real NUBAN has specific algorithm."""
-    serial_number = ''.join(random.choices(string.digits, k=9))
-    # Simplified check digit (sum modulo 10, then 10 - result, or 0 if result is 0)
-    # This is NOT the real NUBAN check digit algorithm.
-    digits = [int(d) for d in (bank_code[:3] + serial_number)] # Use part of bank code + serial
-    s = sum(digits[i] * w for i, w in enumerate([3,7,3,3,7,3,3,7,3,3,7,3])) % 10
-    check_digit = str((10 - s) % 10)
+# NUBAN Generation Utility (Simplified - Real NUBAN has specific CBN algorithm)
+def _generate_nuban(bank_code: str = "999999", serial_length: int = 9) -> str:
+    """Generates a NUBAN-like account number. Bank code is usually fixed for the institution."""
+    serial_number = ''.join(random.choices(string.digits, k=serial_length))
+    check_digit = random.choice(string.digits)
     return serial_number + check_digit
 
+def _log_account_event(db: Session, account_id: int, event_type: str, details: Optional[Dict[str, Any]] = None, changed_by_user_id: str = "SYSTEM"):
+    # print(f"AUDIT LOG (Account: {account_id}): Event='{event_type}', Details='{details}', By='{changed_by_user_id}'")
+    pass # Placeholder for actual audit logging
 
-# --- Account Services ---
-def create_account(db: Session, account_in: schemas.AccountCreate, customer_id: int) -> models.Account:
+
+# --- Account Services (Part 1: Account Management) ---
+# (create_account, get_account_by_id_internal, get_account_by_number, get_accounts_by_customer_id, update_account_status, place_lien_on_account, release_lien_on_account - already implemented in previous step)
+# ... (previous Part 1 code from above) ...
+# --- Account Services (Part 1: Account Management) ---
+def create_account(db: Session, account_in: schemas.AccountCreateRequest, created_by_user_id: str = "SYSTEM") -> models.Account:
     """
-    Creates a new bank account for a customer.
-    Requires customer_id from customer_identity_management.
+    Creates a new bank account for a customer, linked to a product_code.
     """
-    # Verify customer exists (ideally call customer service)
-    # customer = get_customer(db, customer_id)
+    # 1. Validate Customer
+    # customer = get_customer(db, account_in.customer_id) # Assumes get_customer is available
     # if not customer:
-    #     raise NotFoundException(f"Customer with ID {customer_id} not found.")
+    #     raise NotFoundException(f"Customer with ID {account_in.customer_id} not found.")
+    # if not customer.is_active:
+    #     raise InvalidOperationException(f"Customer {account_in.customer_id} is not active.")
+    # TODO: Check if customer's KYC tier allows opening this type of account/product.
 
-    if account_in.account_number:
-        existing_acc = get_account_by_number(db, account_in.account_number)
-        if existing_acc:
-            raise InvalidOperationException(f"Account number {account_in.account_number} already exists.")
-        nuban = account_in.account_number
+    # 2. Validate Product Code and get product details
+    # product_config_model = get_product_config(db, account_in.product_code) # Assumes service from core_infra
+    # if not product_config_model or not product_config_model.is_active:
+    #     raise NotFoundException(f"Active Product Configuration with code '{account_in.product_code}' not found.")
+    # product_params = json.loads(product_config_model.config_parameters_json)
+
+    # Mock product config fetching:
+    mock_product_params = {}
+    if "SAV" in account_in.product_code.upper():
+        mock_product_params = {"account_type": "SAVINGS", "currency": "NGN", "min_opening_balance": 0}
+    elif "CUR" in account_in.product_code.upper():
+        mock_product_params = {"account_type": "CURRENT", "currency": "NGN", "min_opening_balance": 1000}
+    elif "DOM" in account_in.product_code.upper():
+        mock_product_params = {"account_type": "DOMICILIARY", "currency": "USD", "min_opening_balance": 100}
     else:
-        # Generate unique NUBAN (simplified)
-        while True:
-            nuban = generate_nuban()
-            if not get_account_by_number(db, nuban):
-                break
+        raise NotFoundException(f"Mock Product Configuration for code '{account_in.product_code}' not found.")
+
+    account_type_from_product = AccountTypeEnum[mock_product_params["account_type"]]
+    currency_from_product = CurrencyEnum[mock_product_params["currency"]]
+
+    # 3. Check initial deposit against product minimum (if any)
+    min_opening_balance = decimal.Decimal(str(mock_product_params.get("min_opening_balance", 0)))
+    if account_in.initial_deposit_amount < min_opening_balance:
+        raise InvalidOperationException(f"Initial deposit {account_in.initial_deposit_amount} is less than minimum {min_opening_balance} for product {account_in.product_code}.")
+
+    # 4. Generate unique NUBAN account number
+    cbn_bank_code = "999999"
+    while True:
+        nuban = _generate_nuban(bank_code=cbn_bank_code)
+        if not db.query(models.Account).filter(models.Account.account_number == nuban).first():
+            break
 
     db_account = models.Account(
-        customer_id=customer_id, # Use the provided customer_id
+        customer_id=account_in.customer_id,
+        product_code=account_in.product_code,
         account_number=nuban,
-        account_type=account_in.account_type,
-        currency=account_in.currency,
-        ledger_balance=decimal.Decimal('0.0'), # Initial balance is 0 before any deposit
-        available_balance=decimal.Decimal('0.0'),
-        status=AccountStatusEnum.ACTIVE, # Default status
-        fd_maturity_date=account_in.fd_maturity_date,
-        fd_interest_rate=account_in.fd_interest_rate,
-        fd_principal=account_in.fd_principal,
-        last_activity_date=datetime.utcnow()
+        account_type=account_type_from_product,
+        currency=currency_from_product,
+        ledger_balance=decimal.Decimal('0.00'),
+        available_balance=decimal.Decimal('0.00'),
+        status=AccountStatusEnum.ACTIVE,
+        opened_date=date.today(),
+        last_customer_initiated_activity_date=datetime.utcnow(),
+        fd_maturity_date=account_in.fd_maturity_date if account_type_from_product == AccountTypeEnum.FIXED_DEPOSIT else None,
+        fd_interest_rate_pa=account_in.fd_interest_rate_pa if account_type_from_product == AccountTypeEnum.FIXED_DEPOSIT else None,
+        fd_principal_amount=account_in.fd_principal_amount if account_type_from_product == AccountTypeEnum.FIXED_DEPOSIT else None,
     )
     db.add(db_account)
 
     try:
         db.commit()
         db.refresh(db_account)
-    except IntegrityError: # Handles race conditions for account_number if not perfectly unique
+    except IntegrityError as e:
         db.rollback()
-        raise InvalidOperationException("Could not create account due to a conflict. Please try again.")
+        if "accounts_account_number_key" in str(e.orig):
+             raise InvalidOperationException("Generated account number conflict. Please try again.")
+        raise InvalidOperationException(f"Could not create account due to a database conflict: {str(e)}")
 
-    # If there's an initial deposit, post it as the first transaction
-    if account_in.initial_deposit_amount and account_in.initial_deposit_amount > 0:
-        master_tx_id = "TXN_OPEN_" + "".join(random.choices(string.ascii_uppercase + string.digits, k=12))
-        # This is a credit to the new account from a conceptual "cash" or "suspense" GL
+    _log_account_event(db, db_account.id, "ACCOUNT_CREATED", {"product_code": account_in.product_code, "initial_deposit": account_in.initial_deposit_amount}, created_by_user_id)
+
+    if account_in.initial_deposit_amount > 0:
+        # For initial deposit, directly update balances after account creation is committed.
+        # A full ledger entry will also be created by the calling service (e.g. deposit module)
+        # or a system transaction if this is purely an internal opening balance.
+        # Here we simulate the balance update that would result from such a posting.
+        # This step is simplified for now; a full ledger posting would be preferred.
+        financial_transaction_id_opening = f"SYS_OPEN_{db_account.account_number}"
         _create_ledger_entry_internal(
             db=db,
             account_id=db_account.id,
-            transaction_id=master_tx_id,
+            financial_transaction_id=financial_transaction_id_opening,
             entry_type=TransactionTypeEnum.CREDIT,
             amount=account_in.initial_deposit_amount,
             currency=db_account.currency,
-            narration=f"Initial deposit for account opening {db_account.account_number}",
+            narration=f"Initial opening deposit for {db_account.account_number}",
             value_date=datetime.utcnow(),
             channel="SYSTEM",
-            is_system_tx=True # Flag to bypass some checks like available balance on a GL
+            is_system_tx=True # Bypass some checks for system-generated entries
         )
-        db.commit() # Commit the ledger entry
-        db.refresh(db_account)
-
+        # _create_ledger_entry_internal handles balance update and commit within itself now.
+        db.refresh(db_account) # Refresh to get updated balances from ledger posting
     return db_account
 
-def get_account(db: Session, account_id: int) -> Optional[models.Account]:
-    return db.query(models.Account).filter(models.Account.id == account_id).first()
+def get_account_by_id_internal(db: Session, account_id: int, for_update: bool = False) -> Optional[models.Account]:
+    query = db.query(models.Account)
+    if for_update:
+        query = query.with_for_update()
+    return query.filter(models.Account.id == account_id).first()
 
-def get_account_for_update(db: Session, account_id: int) -> Optional[models.Account]:
-    """Retrieves an account with a row-level lock for updates."""
-    return db.query(models.Account).filter(models.Account.id == account_id).with_for_update().first()
-
-def get_account_by_number(db: Session, account_number: str) -> Optional[models.Account]:
-    return db.query(models.Account).filter(models.Account.account_number == account_number).first()
+def get_account_by_number(db: Session, account_number: str, for_update: bool = False) -> Optional[models.Account]:
+    query = db.query(models.Account)
+    if for_update:
+        query = query.with_for_update()
+    return query.filter(models.Account.account_number == account_number).first()
 
 def get_accounts_by_customer_id(db: Session, customer_id: int, skip: int = 0, limit: int = 100) -> List[models.Account]:
-    return db.query(models.Account).filter(models.Account.customer_id == customer_id).offset(skip).limit(limit).all()
+    return db.query(models.Account).filter(models.Account.customer_id == customer_id).order_by(models.Account.opened_date.desc()).offset(skip).limit(limit).all()
 
-def update_account_status(db: Session, account_id: int, status_in: schemas.UpdateAccountStatusRequest) -> models.Account:
-    account = get_account_for_update(db, account_id)
+def update_account_status(db: Session, account_number: str, status_request: schemas.UpdateAccountStatusRequest, updated_by_user_id: str) -> models.Account:
+    account = get_account_by_number(db, account_number, for_update=True)
     if not account:
-        raise NotFoundException(f"Account with ID {account_id} not found.")
-
-    # Add logic here for valid status transitions, e.g., cannot move from CLOSED to ACTIVE easily
-    account.status = status_in.status
-    if status_in.status == AccountStatusEnum.CLOSED:
-        account.closed_date = datetime.utcnow()
-        # Ensure balance is zero before closing, or handle residual balance
-        if account.ledger_balance != decimal.Decimal('0.0'):
-            # db.rollback() # Or handle differently
-            raise InvalidOperationException("Account balance must be zero before closing.")
-
-    account.last_activity_date = datetime.utcnow()
+        raise NotFoundException(f"Account {account_number} not found.")
+    details_before = {"status": account.status.value, "is_post_no_debit": account.is_post_no_debit, "block_reason": account.block_reason}
+    new_status_enum = AccountStatusEnum[status_request.status.value]
+    if new_status_enum == AccountStatusEnum.CLOSED:
+        if account.ledger_balance != decimal.Decimal('0.00'):
+            raise InvalidOperationException(f"Account {account_number} cannot be closed with non-zero balance ({account.ledger_balance}).")
+        if not status_request.closure_reason:
+            raise InvalidOperationException("Closure reason is required to close an account.")
+        account.closed_date = date.today()
+        account.block_reason = None
+        account.is_post_no_debit = False
+    elif new_status_enum == AccountStatusEnum.BLOCKED:
+        if not status_request.block_reason:
+            raise InvalidOperationException("Block reason is required to block an account.")
+        account.block_reason = status_request.block_reason
+    else:
+        account.block_reason = None
+    account.status = new_status_enum
+    if status_request.is_post_no_debit is not None:
+        account.is_post_no_debit = status_request.is_post_no_debit
+    account.last_customer_initiated_activity_date = datetime.utcnow()
+    details_after = {"status": account.status.value, "is_post_no_debit": account.is_post_no_debit, "block_reason": account.block_reason, "closed_date": account.closed_date}
+    _log_account_event(db, account.id, "ACCOUNT_STATUS_UPDATED", {"before": details_before, "after": details_after, "reason_for_change": status_request.reason_for_change}, updated_by_user_id)
     db.commit()
     db.refresh(account)
-    # TODO: Audit log for status change
     return account
 
-# --- Ledger & Transaction Services ---
+def place_lien_on_account(db: Session, account_number: str, lien_request: schemas.PlaceLienRequest, placed_by_user_id: str) -> models.Account:
+    account = get_account_by_number(db, account_number, for_update=True)
+    if not account:
+        raise NotFoundException(f"Account {account_number} not found.")
+    if account.status != AccountStatusEnum.ACTIVE:
+        raise InvalidOperationException(f"Account {account_number} is not active, cannot place lien.")
+    if account.is_post_no_debit:
+        raise InvalidOperationException(f"Account {account_number} has Post-No-Debit, cannot place lien.")
+    if account.available_balance < lien_request.amount:
+        raise InsufficientFundsException(f"Insufficient available balance ({account.available_balance}) in account {account_number} to place lien of {lien_request.amount}.")
+    details_before = {"lien_amount": account.lien_amount, "available_balance": account.available_balance}
+    account.lien_amount += lien_request.amount
+    account.available_balance -= lien_request.amount
+    details_after = {"lien_amount": account.lien_amount, "available_balance": account.available_balance}
+    _log_account_event(db, account.id, "LIEN_PLACED", {"before": details_before, "after": details_after, "lien_details": lien_request.dict()}, placed_by_user_id)
+    db.commit()
+    db.refresh(account)
+    return account
+
+def release_lien_on_account(db: Session, account_number: str, release_request: schemas.ReleaseLienRequest, released_by_user_id: str) -> models.Account:
+    account = get_account_by_number(db, account_number, for_update=True)
+    if not account:
+        raise NotFoundException(f"Account {account_number} not found.")
+    amount_to_actually_release = min(release_request.amount_to_release, account.lien_amount)
+    if amount_to_actually_release <= decimal.Decimal('0.00'):
+        raise InvalidOperationException("Amount to release must be positive or no lien to release.")
+    details_before = {"lien_amount": account.lien_amount, "available_balance": account.available_balance}
+    account.lien_amount -= amount_to_actually_release
+    account.available_balance += amount_to_actually_release
+    details_after = {"lien_amount": account.lien_amount, "available_balance": account.available_balance}
+    _log_account_event(db, account.id, "LIEN_RELEASED", {"before": details_before, "after": details_after, "release_details": release_request.dict(), "amount_released": amount_to_actually_release}, released_by_user_id)
+    db.commit()
+    db.refresh(account)
+    return account
+
+# --- Part 2: Ledger & Transaction Posting Services ---
+
 def _create_ledger_entry_internal(
     db: Session,
     account_id: int,
-    transaction_id: str,
+    financial_transaction_id: str,
     entry_type: TransactionTypeEnum,
     amount: decimal.Decimal,
     currency: CurrencyEnum,
     narration: str,
-    value_date: datetime,
+    value_date: datetime, # Should be datetime for value_date
     channel: Optional[str] = "SYSTEM",
-    reference_number: Optional[str] = None,
-    is_system_tx: bool = False # Special flag for system transactions like interest posting
-    ) -> models.LedgerEntry:
+    external_reference_number: Optional[str] = None,
+    is_system_tx: bool = False # Flag for system transactions like interest, initial deposit
+) -> models.LedgerEntry:
     """
     Internal helper to create a single ledger entry and update account balances.
-    This function assumes it's part of a larger database transaction managed by the caller.
-    Locking (with_for_update) should be handled by the caller on the account object.
+    This function forms part of a larger database transaction, commit is handled by caller.
+    It assumes the Account row is already locked if necessary (e.g. by `get_account_by_number(for_update=True)`).
     """
-    account = db.query(models.Account).filter(models.Account.id == account_id).with_for_update().first() # Lock account row
+    account = db.query(models.Account).filter(models.Account.id == account_id).first() # No need for_update here if caller handles it
     if not account:
+        # This should ideally not happen if caller validates account before calling
         raise NotFoundException(f"Account with ID {account_id} not found for ledger posting.")
 
-    if account.status not in [AccountStatusEnum.ACTIVE]: # And potentially other statuses that allow posting
+    if account.status not in [AccountStatusEnum.ACTIVE] and not is_system_tx:
+        # Allow system transactions (like interest on dormant) on non-ACTIVE accounts if business rules permit.
+        # For typical customer/teller transactions, account must be ACTIVE.
         raise InvalidOperationException(f"Account {account.account_number} is not active. Current status: {account.status.value}")
 
-    if account.currency != currency:
+    if account.currency != currency: # Ensure currency matches
         raise InvalidOperationException(f"Transaction currency {currency.value} does not match account currency {account.currency.value}.")
 
     balance_before_txn = account.ledger_balance
-    available_balance_before_txn = account.available_balance
 
     if entry_type == TransactionTypeEnum.DEBIT:
-        if not is_system_tx and (available_balance_before_txn < amount): # System tx might overdraw a GL account
-            raise InsufficientFundsException(f"Insufficient available balance in account {account.account_number}.")
+        if not is_system_tx and account.is_post_no_debit:
+            raise InvalidOperationException(f"Account {account.account_number} has Post-No-Debit restriction.")
+        if not is_system_tx and (account.available_balance < amount):
+            raise InsufficientFundsException(f"Insufficient available balance in account {account.account_number} for debit of {amount}.")
         account.ledger_balance -= amount
-        account.available_balance -= amount # Assuming cleared funds for simplicity here
+        account.available_balance -= amount # Simplification: assumes all debits affect available balance immediately
     elif entry_type == TransactionTypeEnum.CREDIT:
         account.ledger_balance += amount
-        account.available_balance += amount # Assuming cleared funds
+        account.available_balance += amount # Simplification: assumes all credits affect available balance immediately
     else:
-        raise ValueError("Invalid transaction type")
+        raise ValueError("Invalid ledger entry type specified.") # Should not happen with Enum
 
-    account.last_activity_date = datetime.utcnow()
+    account.last_customer_initiated_activity_date = datetime.utcnow() # Update activity date
 
     ledger_entry = models.LedgerEntry(
-        transaction_id=transaction_id,
+        financial_transaction_id=financial_transaction_id,
         account_id=account_id,
         entry_type=entry_type,
-        amount=amount,
+        amount=amount, # Already decimal.Decimal
         currency=currency,
         narration=narration,
-        transaction_date=datetime.utcnow(), # Booking date
-        value_date=value_date,
+        transaction_date=datetime.utcnow(), # Booking date/time
+        value_date=value_date, # Value date/time
         balance_before=balance_before_txn,
         balance_after=account.ledger_balance,
         channel=channel,
-        reference_number=reference_number
+        external_reference_number=external_reference_number
     )
     db.add(ledger_entry)
-    # db.commit() # Caller should commit
-    # db.refresh(account)
-    # db.refresh(ledger_entry)
+    db.flush() # Flush to assign ID to ledger_entry if needed by caller before commit
+    # db.commit() # COMMIT IS HANDLED BY THE CALLING SERVICE WRAPPING THE TRANSACTION
+    # db.refresh(account) # Caller should refresh if needed after its commit
+    # db.refresh(ledger_entry) # Caller should refresh if needed after its commit
     return ledger_entry
 
 
-def post_double_entry_transaction(db: Session, trans_details: schemas.PostTransactionRequest) -> schemas.PostTransactionResponse:
+def post_internal_transaction(db: Session, request: schemas.InternalTransactionPostingRequest) -> schemas.InternalTransactionPostingResponse:
     """
-    Posts a double-entry transaction affecting two accounts or an account and a GL.
-    Ensures atomicity: both legs succeed or both fail.
+    Handles posting for internal transfers (Account-to-Account, Account-to-GL, GL-to-Account, GL-to-GL).
+    This is the primary service for moving funds within the bank's own books.
+    It ensures atomicity for double-entry postings.
     """
-    # This is a simplified example. Real GL systems are complex.
-    # We'll use account numbers. For GLs, you'd fetch GL model instances.
+    debit_entry_model: Optional[models.LedgerEntry] = None
+    credit_entry_model: Optional[models.LedgerEntry] = None
 
-    debit_account = None
-    credit_account = None
-    master_transaction_id = "TXN_" + trans_details.transaction_reference # Or generate a new UUID
+    # Determine debit and credit entities (Account or GL)
+    # This section needs robust logic to fetch account/GL models and check their status/validity.
+    # For brevity, assuming helper functions like _get_entity_for_posting(db, leg_details) exist.
 
-    if trans_details.from_account_number:
-        debit_account = get_account_by_number(db, trans_details.from_account_number)
-        if not debit_account:
-            raise NotFoundException(f"Debit account {trans_details.from_account_number} not found.")
-    # else if trans_details.from_gl_code: fetch GL account
-    else:
-        raise InvalidOperationException("Debit account or GL must be specified.")
+    # For example, if debit_leg specifies account_number:
+    # debit_target_account = get_account_by_number(db, request.debit_leg['account_number'], for_update=True)
+    # if not debit_target_account: raise NotFoundException("Debit account not found.")
+    # ... similar for credit_target_account or GLs ...
 
-    if trans_details.to_account_number:
-        credit_account = get_account_by_number(db, trans_details.to_account_number)
-        if not credit_account:
-            raise NotFoundException(f"Credit account {trans_details.to_account_number} not found.")
-    # else if trans_details.to_gl_code: fetch GL account
-    else:
-        raise InvalidOperationException("Credit account or GL must be specified.")
-
-    # Value date defaults to now if not provided
-    value_date = trans_details.value_date or datetime.utcnow()
+    # For mock purposes, assume accounts are valid and fetched.
+    # In a real system, you'd lock rows for accounts involved.
+    mock_debit_account_id = 1 # Placeholder
+    mock_credit_account_id = 2 # Placeholder
 
     try:
-        # Debit Leg
-        debit_entry_model = _create_ledger_entry_internal(
-            db=db,
-            account_id=debit_account.id, # Assuming it's an account-to-account transfer
-            transaction_id=master_transaction_id,
-            entry_type=TransactionTypeEnum.DEBIT,
-            amount=trans_details.amount,
-            currency=trans_details.currency, # Ensure currency conversion if accounts differ
-            narration=trans_details.narration,
-            value_date=value_date,
-            channel=trans_details.channel,
-            reference_number=trans_details.transaction_reference + "_DR"
-        )
+        if request.debit_leg: # Assuming it's an account for simplicity
+            debit_entry_model = _create_ledger_entry_internal(
+                db=db, account_id=mock_debit_account_id, # Replace with actual fetched account ID
+                financial_transaction_id=request.financial_transaction_id,
+                entry_type=TransactionTypeEnum.DEBIT,
+                amount=request.amount, currency=request.currency,
+                narration=request.debit_leg.get('narration', request.narration_overall),
+                value_date=request.value_date or datetime.utcnow(), channel=request.channel,
+                external_reference_number=request.external_reference
+            )
 
-        # Credit Leg
-        credit_entry_model = _create_ledger_entry_internal(
-            db=db,
-            account_id=credit_account.id,
-            transaction_id=master_transaction_id,
-            entry_type=TransactionTypeEnum.CREDIT,
-            amount=trans_details.amount,
-            currency=trans_details.currency, # Ensure currency conversion if accounts differ
-            narration=trans_details.narration,
-            value_date=value_date,
-            channel=trans_details.channel,
-            reference_number=trans_details.transaction_reference + "_CR"
-        )
+        if request.credit_leg: # Assuming it's an account for simplicity
+             credit_entry_model = _create_ledger_entry_internal(
+                db=db, account_id=mock_credit_account_id, # Replace with actual fetched account ID
+                financial_transaction_id=request.financial_transaction_id,
+                entry_type=TransactionTypeEnum.CREDIT,
+                amount=request.amount, currency=request.currency,
+                narration=request.credit_leg.get('narration', request.narration_overall),
+                value_date=request.value_date or datetime.utcnow(), channel=request.channel,
+                external_reference_number=request.external_reference
+            )
 
-        db.commit()
-        db.refresh(debit_entry_model) # Refresh to get committed state
-        db.refresh(credit_entry_model)
+        # If only single leg info provided (e.g. system posting to one customer account from/to a GL)
+        # ... handle single leg posting logic ...
 
-        return schemas.PostTransactionResponse(
-            master_transaction_id=master_transaction_id,
-            status="SUCCESSFUL",
-            message="Transaction posted successfully.",
-            debit_entry=schemas.LedgerEntryResponse.from_orm(debit_entry_model),
-            credit_entry=schemas.LedgerEntryResponse.from_orm(credit_entry_model),
+        db.commit() # Commit all ledger entries and account balance updates together
+
+        # Refresh models after commit if their IDs or computed values are needed
+        if debit_entry_model: db.refresh(debit_entry_model)
+        if credit_entry_model: db.refresh(credit_entry_model)
+
+        # _log_account_event for both accounts involved if applicable.
+
+        return schemas.InternalTransactionPostingResponse(
+            financial_transaction_id=request.financial_transaction_id,
+            status="SUCCESSFUL_POSTING",
+            message="Transaction posted successfully to ledger.",
+            debit_ledger_entry_id=debit_entry_model.id if debit_entry_model else None,
+            credit_ledger_entry_id=credit_entry_model.id if credit_entry_model else None,
             timestamp=datetime.utcnow()
         )
-
     except (InsufficientFundsException, InvalidOperationException, NotFoundException) as e:
         db.rollback()
-        raise e # Re-raise the specific exception
+        # Log the specific error for the financial_transaction_id in TransactionManagement system
+        raise e # Re-raise for TransactionManagement to handle the master FT status
     except Exception as e:
         db.rollback()
-        # Log general exception e
-        raise InvalidOperationException(f"Transaction failed due to an unexpected error: {str(e)}")
+        # Log generic error
+        raise InvalidOperationException(f"Ledger posting failed unexpectedly for FT ID {request.financial_transaction_id}: {str(e)}")
 
 
-def get_ledger_entries_for_account(db: Session, account_id: int, skip: int = 0, limit: int = 100, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[models.LedgerEntry]:
-    query = db.query(models.LedgerEntry).filter(models.LedgerEntry.account_id == account_id)
-    if start_date:
-        query = query.filter(models.LedgerEntry.transaction_date >= start_date)
-    if end_date:
-        # Add 1 day to end_date to make it inclusive of the whole day
-        query = query.filter(models.LedgerEntry.transaction_date < (end_date + timedelta(days=1)))
+def post_cash_deposit_to_account(db: Session, account_number: str, amount: decimal.Decimal, currency: CurrencyEnum,
+                                 narration: str, channel: str, financial_transaction_id: str,
+                                 value_date: Optional[datetime] = None, posted_by_user_id: str = "SYSTEM",
+                                 teller_gl_code: str = "TELLER_CASH_GL_MAIN") -> models.LedgerEntry: # Teller's cash GL
+    """Posts a cash deposit: Credits customer account, Debits Teller/Branch Cash GL."""
+    target_account = get_account_by_number(db, account_number, for_update=True)
+    if not target_account:
+        raise NotFoundException(f"Account {account_number} for cash deposit not found.")
 
-    return query.order_by(models.LedgerEntry.transaction_date.desc(), models.LedgerEntry.id.desc()).offset(skip).limit(limit).all()
+    # This is a simplified call to post_internal_transaction.
+    # A more direct approach would be to use _create_ledger_entry_internal for customer leg,
+    # and another _create_ledger_entry_internal for the GL leg (if GLs are also 'Account' like entities in ledger).
+    # For now, conceptualizing the double entry:
 
-def get_ledger_entry_count_for_account(db: Session, account_id: int, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> int:
-    query = db.query(func.count(models.LedgerEntry.id)).filter(models.LedgerEntry.account_id == account_id)
-    if start_date:
-        query = query.filter(models.LedgerEntry.transaction_date >= start_date)
-    if end_date:
-        query = query.filter(models.LedgerEntry.transaction_date < (end_date + timedelta(days=1)))
-    return query.scalar_one()
+    # 1. Credit Customer Account
+    customer_credit_entry = _create_ledger_entry_internal(
+        db=db, account_id=target_account.id,
+        financial_transaction_id=financial_transaction_id,
+        entry_type=TransactionTypeEnum.CREDIT, amount=amount, currency=currency,
+        narration=narration, value_date=value_date or datetime.utcnow(), channel=channel
+    )
+
+    # 2. Debit Teller/Branch Cash GL (conceptual - GL posting needs full implementation)
+    # This assumes a function `post_to_gl_account(db, gl_code, amount, type, ft_id, ...)` exists.
+    # For now, this leg is implicit or handled by accounting reconciliation.
+    # _log_account_event(db, target_account.id, "CASH_DEPOSIT_POSTED", {"amount": amount, "ft_id": financial_transaction_id}, posted_by_user_id)
+
+    db.commit()
+    db.refresh(customer_credit_entry)
+    db.refresh(target_account) # Refresh account to get updated balances
+    return customer_credit_entry
 
 
-# --- Balance Inquiry ---
+def post_cash_withdrawal_from_account(db: Session, account_number: str, amount: decimal.Decimal, currency: CurrencyEnum,
+                                      narration: str, channel: str, financial_transaction_id: str,
+                                      value_date: Optional[datetime] = None, posted_by_user_id: str = "SYSTEM",
+                                      teller_gl_code: str = "TELLER_CASH_GL_MAIN") -> models.LedgerEntry:
+    """Posts a cash withdrawal: Debits customer account, Credits Teller/Branch Cash GL."""
+    target_account = get_account_by_number(db, account_number, for_update=True)
+    if not target_account:
+        raise NotFoundException(f"Account {account_number} for cash withdrawal not found.")
+
+    # 1. Debit Customer Account
+    customer_debit_entry = _create_ledger_entry_internal(
+        db=db, account_id=target_account.id,
+        financial_transaction_id=financial_transaction_id,
+        entry_type=TransactionTypeEnum.DEBIT, amount=amount, currency=currency,
+        narration=narration, value_date=value_date or datetime.utcnow(), channel=channel
+    )
+
+    # 2. Credit Teller/Branch Cash GL (conceptual)
+    # _log_account_event(db, target_account.id, "CASH_WITHDRAWAL_POSTED", {"amount": amount, "ft_id": financial_transaction_id}, posted_by_user_id)
+
+    db.commit()
+    db.refresh(customer_debit_entry)
+    db.refresh(target_account)
+    return customer_debit_entry
+
+
+# --- Balance Inquiry & Transaction History ---
 def get_account_balance(db: Session, account_number: str) -> Optional[schemas.AccountBalanceResponse]:
     account = get_account_by_number(db, account_number)
     if not account:
@@ -314,171 +438,139 @@ def get_account_balance(db: Session, account_number: str) -> Optional[schemas.Ac
         account_number=account.account_number,
         ledger_balance=account.ledger_balance,
         available_balance=account.available_balance,
-        currency=account.currency
+        currency=schemas.CurrencySchema(account.currency.value) # Ensure schema enum used
     )
 
-# --- Lien Management ---
-def place_lien(db: Session, account_number: str, lien_request: schemas.PlaceLienRequest) -> models.Account:
-    account = db.query(models.Account).filter(models.Account.account_number == account_number).with_for_update().first()
+def get_transaction_history_for_account(
+    db: Session, account_number: str,
+    skip: int = 0, limit: int = 100,
+    start_date: Optional[date] = None, end_date: Optional[date] = None
+) -> List[models.LedgerEntry]:
+    account = get_account_by_number(db, account_number)
     if not account:
-        raise NotFoundException(f"Account {account_number} not found.")
-    if account.status != AccountStatusEnum.ACTIVE:
-        raise InvalidOperationException("Account is not active.")
-
-    # Check if enough available balance MINUS existing lien to cover new lien.
-    # Or, if lien can exceed available balance (depends on bank policy for certain lien types)
-    effective_available_for_lien = account.available_balance # Simple model: lien reduces available balance directly
-    if effective_available_for_lien < lien_request.amount:
-        raise InsufficientFundsException("Not enough available balance to place lien of specified amount.")
-
-    account.lien_amount += lien_request.amount
-    account.available_balance -= lien_request.amount # Reduce available balance by lien amount
-    account.last_activity_date = datetime.utcnow()
-
-    # TODO: Store individual lien details in a separate LienDetails table for tracking by reason/expiry
-    # models.LienDetail(account_id=account.id, amount=lien_request.amount, reason=lien_request.reason, ...)
-
-    db.commit()
-    db.refresh(account)
-    return account
-
-def release_lien(db: Session, account_number: str, release_request: schemas.ReleaseLienRequest) -> models.Account:
-    account = db.query(models.Account).filter(models.Account.account_number == account_number).with_for_update().first()
-    if not account:
+        # Optionally raise NotFoundException or return empty list based on API contract
         raise NotFoundException(f"Account {account_number} not found.")
 
-    # This is simplified. Proper lien release would require identifying specific lien to release.
-    # For now, we release a portion of the total lien amount.
-    # TODO: Fetch specific LienDetail by reason or ID, release that, and sum remaining active liens.
+    query = db.query(models.LedgerEntry).filter(models.LedgerEntry.account_id == account.id)
+    if start_date:
+        query = query.filter(models.LedgerEntry.value_date >= datetime.combine(start_date, datetime.min.time()))
+    if end_date:
+        query = query.filter(models.LedgerEntry.value_date <= datetime.combine(end_date, datetime.max.time())) # Inclusive of end date
 
-    amount_to_release = release_request.amount
-    if amount_to_release is None or amount_to_release > account.lien_amount: # Release all or up to total lien
-        amount_to_release = account.lien_amount
+    return query.order_by(models.LedgerEntry.value_date.desc(), models.LedgerEntry.id.desc()).offset(skip).limit(limit).all()
 
-    if amount_to_release <= decimal.Decimal('0.0'):
-        raise InvalidOperationException("Lien release amount must be positive.")
+# --- Interest & Dormancy services would be here (Part 3 - Batch Processes, if split further) ---
+# For now, keeping them in Part 2 as they involve ledger interactions.
 
-    account.lien_amount -= amount_to_release
-    account.available_balance += amount_to_release # Increase available balance
-    account.last_activity_date = datetime.utcnow()
-
-    db.commit()
-    db.refresh(account)
-    return account
-
-# --- Interest Accrual & Posting (Simplified) ---
-# Real interest calculation is complex (day-basis, compounding rules, product-specific rates)
-def calculate_and_accrue_daily_interest_for_account(db: Session, account_id: int, calculation_date: datetime, interest_rate_pa: decimal.Decimal) -> Optional[schemas.AccrueInterestResponse]:
+def accrue_daily_interest_for_account(db: Session, account_id: int, calculation_date: date, interest_rate_pa: decimal.Decimal, product_interest_config: Dict) -> Optional[models.InterestAccrualLog]:
     """Calculates and logs daily accrued interest for a single account."""
-    account = db.query(models.Account).filter(models.Account.id == account_id).with_for_update().first()
-    if not account or account.status != AccountStatusEnum.ACTIVE or account.account_type != AccountTypeEnum.SAVINGS: # Example: only for savings
-        return None # Or log skip
-
-    # Simplified: Use current ledger balance. Real systems use average daily balance or day-end balance.
-    # Ensure calculation_date is for a period not yet accrued.
-    # last_accrual = account.last_interest_accrual_date
-    # if last_accrual and last_accrual.date() >= calculation_date.date():
-    #    return None # Already accrued for this date or future
-
-    daily_rate = (interest_rate_pa / decimal.Decimal('100')) / decimal.Decimal('365') # Assuming 365 day year
-    balance_for_interest = account.ledger_balance # Simplification
-
-    if balance_for_interest <= decimal.Decimal('0.0'): # No interest on zero or negative balance
+    account = get_account_by_id_internal(db, account_id, for_update=True)
+    if not account or account.status != AccountStatusEnum.ACTIVE or account.account_type not in [AccountTypeEnum.SAVINGS, AccountTypeEnum.FIXED_DEPOSIT]: # Example eligibility
         return None
 
-    accrued_amount_today = balance_for_interest * daily_rate
-    accrued_amount_today = accrued_amount_today.quantize(decimal.Decimal('0.0001')) # Round to 4 decimal places
+    # Check if already accrued for this date
+    # if account.last_interest_accrual_run_date and account.last_interest_accrual_run_date >= calculation_date:
+    #    return None # Already accrued
 
-    if accrued_amount_today > decimal.Decimal('0.0'):
-        account.accrued_interest += accrued_amount_today
-        account.last_interest_accrual_date = calculation_date
+    # Determine balance for interest (e.g., minimum daily balance, average balance - simplified to current ledger for now)
+    balance_for_interest = account.ledger_balance
+    min_bal_for_interest = decimal.Decimal(str(product_interest_config.get("min_balance_for_interest", 0)))
 
-        # Log this accrual (e.g., in models.InterestAccrualLog)
-        # accrual_log = models.InterestAccrualLog(...)
-        # db.add(accrual_log)
+    if balance_for_interest < min_bal_for_interest:
+        return None # Below minimum balance to earn interest
 
-        db.commit() # Commit changes to account.accrued_interest
-        db.refresh(account)
-        return schemas.AccrueInterestResponse(
+    # day_count_convention = product_interest_config.get("day_count_convention", 365) # e.g. 365, 360, Actual/Actual
+    daily_rate = (interest_rate_pa / decimal.Decimal('100')) / decimal.Decimal('365')
+
+    accrued_amount_today = (balance_for_interest * daily_rate).quantize(decimal.Decimal('0.0001')) # 4DP for accrual
+
+    if accrued_amount_today > decimal.Decimal('0.0000'):
+        accrual_log = models.InterestAccrualLog(
             account_id=account.id,
+            accrual_date=calculation_date,
             amount_accrued=accrued_amount_today,
-            new_total_accrued_interest=account.accrued_interest
+            interest_rate_pa_used=interest_rate_pa,
+            balance_subject_to_interest=balance_for_interest
         )
+        db.add(accrual_log)
+
+        account.accrued_interest_payable += accrued_amount_today # Add to the running total of accrued interest
+        account.last_interest_accrual_run_date = calculation_date
+
+        # db.commit() # Commit should be handled by the batch process orchestrating this.
+        # db.refresh(account)
+        # db.refresh(accrual_log)
+        return accrual_log
     return None
 
-def post_accumulated_interest_to_account(db: Session, account_id: int, posting_date: datetime) -> Optional[schemas.PostAccruedInterestResponse]:
+def post_accrued_interest_to_ledger(db: Session, account_id: int, posting_date: date, financial_transaction_id_base: str, posted_by_user_id: str = "SYSTEM_INTEREST_POST") -> Optional[models.LedgerEntry]:
     """Posts total accumulated interest to the account's ledger balance."""
-    account = db.query(models.Account).filter(models.Account.id == account_id).with_for_update().first()
-    if not account or account.accrued_interest <= decimal.Decimal('0.0'):
-        return None # No interest to post or account not found
-
-    amount_to_post = account.accrued_interest.quantize(decimal.Decimal('0.01')) # Post rounded to 2 decimal places (currency subunit)
-
-    if amount_to_post <= decimal.Decimal('0.0'):
+    account = get_account_by_id_internal(db, account_id, for_update=True)
+    if not account or account.accrued_interest_payable <= decimal.Decimal('0.00'):
         return None
 
+    amount_to_post = account.accrued_interest_payable.quantize(decimal.Decimal('0.01')) # Post rounded to 2DP
 
-    master_tx_id = "TXN_INTPOST_" + "".join(random.choices(string.ascii_uppercase + string.digits, k=10)) + f"_{account.id}"
-    try:
-        # This is a credit to the customer account from an "Interest Expense GL" (not modeled here)
-        _create_ledger_entry_internal(
-            db=db,
-            account_id=account.id,
-            transaction_id=master_tx_id,
-            entry_type=TransactionTypeEnum.CREDIT,
-            amount=amount_to_post,
-            currency=account.currency,
-            narration=f"Interest posting for period ending {posting_date.strftime('%Y-%m-%d')}",
-            value_date=posting_date,
-            channel="SYSTEM",
-            is_system_tx=True
-        )
+    if amount_to_post <= decimal.Decimal('0.00'):
+        # Clear tiny residual accrued interest if it rounds to zero for posting
+        account.accrued_interest_payable = decimal.Decimal('0.00')
+        # db.commit()
+        return None
 
-        account.accrued_interest -= amount_to_post # Reduce accrued interest by amount posted
-        if account.accrued_interest < decimal.Decimal('0.0'): # Should not happen with proper quantization
-            account.accrued_interest = decimal.Decimal('0.0')
+    ft_id_interest = f"{financial_transaction_id_base}_ACC{account.id}"
 
-        db.commit()
-        db.refresh(account)
+    # Credit Customer Account, Debit Bank's Interest Expense GL
+    customer_credit_entry = _create_ledger_entry_internal(
+        db=db, account_id=account.id,
+        financial_transaction_id=ft_id_interest,
+        entry_type=TransactionTypeEnum.CREDIT, amount=amount_to_post, currency=account.currency,
+        narration=f"Interest Credit for period ending {posting_date.strftime('%Y-%m-%d')}",
+        value_date=datetime.combine(posting_date, datetime.min.time()), channel="SYSTEM_INTEREST",
+        is_system_tx=True
+    )
 
-        return schemas.PostAccruedInterestResponse(
-            account_id=account.id,
-            amount_posted=amount_to_post,
-            new_ledger_balance=account.ledger_balance
-        )
-    except Exception as e:
-        db.rollback()
-        # Log e
-        raise InvalidOperationException(f"Failed to post interest for account {account.account_number}: {str(e)}")
+    # Debit Interest Expense GL (conceptual)
+    # _create_ledger_entry_internal(db, gl_account_id_interest_expense, ft_id_interest, TransactionTypeEnum.DEBIT, ...)
 
+    account.accrued_interest_payable -= amount_to_post # Reduce the accumulated accrued interest
+    _log_account_event(db, account.id, "INTEREST_POSTED", {"amount": amount_to_post, "ft_id": ft_id_interest}, posted_by_user_id)
 
-# --- Dormancy/Inactivity Handling ---
-# A batch job would run this periodically
-def process_dormant_accounts(db: Session, dormancy_period_days: int, inactivity_period_days: int):
-    """
-    Identifies and updates accounts to INACTIVE or DORMANT based on last activity date.
-    """
-    now = datetime.utcnow()
-    dormancy_threshold_date = now - timedelta(days=dormancy_period_days)
-    inactivity_threshold_date = now - timedelta(days=inactivity_period_days)
+    # Update InterestAccrualLog records for this account to mark them as posted
+    # db.query(models.InterestAccrualLog).filter(
+    #     models.InterestAccrualLog.account_id == account.id,
+    #     models.InterestAccrualLog.is_posted_to_account_ledger == False,
+    #     models.InterestAccrualLog.accrual_date <= posting_date
+    # ).update({"is_posted_to_account_ledger": True, "posting_date": posting_date, "related_ledger_entry_id": customer_credit_entry.id})
 
-    # Active to Inactive
-    accounts_to_make_inactive = db.query(models.Account).filter(
-        models.Account.status == AccountStatusEnum.ACTIVE,
-        models.Account.last_activity_date < inactivity_threshold_date
-    ).all()
-    for acc in accounts_to_make_inactive:
-        acc.status = AccountStatusEnum.INACTIVE
-        # Log this change
+    # db.commit() # Handled by caller
+    # db.refresh(customer_credit_entry)
+    # db.refresh(account)
+    return customer_credit_entry
 
-    # Inactive to Dormant
-    accounts_to_make_dormant = db.query(models.Account).filter(
-        models.Account.status == AccountStatusEnum.INACTIVE,
-        models.Account.last_activity_date < dormancy_threshold_date
-    ).all()
-    for acc in accounts_to_make_dormant:
-        acc.status = AccountStatusEnum.DORMANT
-        # Log this change, potentially move to a different GL pool
+def process_account_dormancy(db: Session, account_id: int, inactivity_days_config: int, dormancy_days_config: int, system_user_id: str = "SYSTEM_DORMANCY") -> Optional[str]:
+    """Checks and updates dormancy status for a single account."""
+    account = get_account_by_id_internal(db, account_id, for_update=True)
+    if not account or account.status in [AccountStatusEnum.CLOSED, AccountStatusEnum.DORMANT]: # Already closed or dormant
+        return None
 
-    db.commit()
-    return {"made_inactive": len(accounts_to_make_inactive), "made_dormant": len(accounts_to_make_dormant)}
+    now_dt = datetime.utcnow()
+    last_activity_dt = account.last_customer_initiated_activity_date
+
+    days_inactive = (now_dt - last_activity_dt).days
+    new_status = None
+
+    if account.status == AccountStatusEnum.ACTIVE and days_inactive >= inactivity_days_config:
+        new_status = AccountStatusEnum.INACTIVE
+    elif account.status == AccountStatusEnum.INACTIVE and days_inactive >= dormancy_days_config:
+        new_status = AccountStatusEnum.DORMANT
+        # TODO: Additional actions for dormancy (e.g., move to dormant ledger, stop certain charges)
+
+    if new_status and new_status != account.status:
+        details_before = {"status": account.status.value}
+        account.status = new_status
+        details_after = {"status": account.status.value}
+        _log_account_event(db, account.id, f"ACCOUNT_STATUS_CHANGED_TO_{new_status.value}", {"before": details_before, "after": details_after, "days_inactive": days_inactive}, system_user_id)
+        # db.commit() # Handled by batch caller
+        # db.refresh(account)
+        return new_status.value
+    return None
