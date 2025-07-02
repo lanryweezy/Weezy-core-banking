@@ -1,69 +1,81 @@
 # Database models for Accounts & Ledger Management
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Numeric, ForeignKey, Enum as SQLAlchemyEnum
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Numeric, ForeignKey, Enum as SQLAlchemyEnum, Date, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-# from weezy_cbs.database import Base # Assuming a shared declarative base
+# IMPORTANT: In a real multi-module setup, Base should be imported from a shared weezy_cbs.database module
 from sqlalchemy.ext.declarative import declarative_base
 Base = declarative_base() # Local Base for now
 
 import enum
 
 class AccountTypeEnum(enum.Enum):
-    SAVINGS = "Savings"
-    CURRENT = "Current"
-    FIXED_DEPOSIT = "Fixed Deposit"
-    # Add more as needed, e.g., DOMICILIARY, LOAN_ACCOUNT
+    SAVINGS = "SAVINGS"
+    CURRENT = "CURRENT"
+    FIXED_DEPOSIT = "FIXED_DEPOSIT"
+    DOMICILIARY = "DOMICILIARY"
+    LOAN_ACCOUNT = "LOAN_ACCOUNT" # For loan disbursement/repayment tracking
 
 class AccountStatusEnum(enum.Enum):
-    ACTIVE = "Active"
-    INACTIVE = "Inactive" # No transactions for a defined period
-    DORMANT = "Dormant"   # Inactive for a longer, legally defined period
-    CLOSED = "Closed"
-    BLOCKED = "Blocked"   # e.g., due to fraud suspicion, court order
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"       # No transactions for a defined period (e.g. 6 months)
+    DORMANT = "DORMANT"         # Inactive for a longer, legally defined period (e.g. 1-2 years)
+    CLOSED = "CLOSED"
+    BLOCKED = "BLOCKED"         # General block
+    # Specific block reasons can be stored in block_reason field or use more statuses
+    # BLOCKED_PND = "BLOCKED_PND" # Post-No-Debit by regulatory order
+    # BLOCKED_LIEN = "BLOCKED_LIEN" # Lien placed
+    # BLOCKED_FRAUD = "BLOCKED_FRAUD" # Suspected fraud
 
-class CurrencyEnum(enum.Enum): # Should ideally be a more comprehensive list or table
+class CurrencyEnum(enum.Enum): # Should ideally be a more comprehensive list or table from a shared module
     NGN = "NGN"
     USD = "USD"
     EUR = "EUR"
     GBP = "GBP"
+    # Add more as needed
 
 class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
     account_number = Column(String(10), unique=True, index=True, nullable=False) # Standard NUBAN
-    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True) # Assuming 'customers' table from customer_identity_management
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=False, index=True)
+    product_code = Column(String, ForeignKey("product_configs.product_code"), nullable=False, index=True) # Link to ProductConfig
 
-    account_type = Column(SQLAlchemyEnum(AccountTypeEnum), nullable=False)
-    currency = Column(SQLAlchemyEnum(CurrencyEnum), nullable=False, default=CurrencyEnum.NGN)
+    account_type = Column(SQLAlchemyEnum(AccountTypeEnum), nullable=False) # Derived from product_code usually
+    currency = Column(SQLAlchemyEnum(CurrencyEnum), nullable=False, default=CurrencyEnum.NGN) # Derived from product_code
 
-    ledger_balance = Column(Numeric(precision=18, scale=4), default=0.0000, nullable=False)
-    available_balance = Column(Numeric(precision=18, scale=4), default=0.0000, nullable=False)
+    ledger_balance = Column(Numeric(precision=18, scale=2), default=0.00, nullable=False)
+    available_balance = Column(Numeric(precision=18, scale=2), default=0.00, nullable=False)
     # available_balance = ledger_balance - uncleared_funds - lien_amount
 
-    lien_amount = Column(Numeric(precision=18, scale=4), default=0.0000) # Funds earmarked, not spendable
-    uncleared_funds = Column(Numeric(precision=18, scale=4), default=0.0000) # e.g. Cheque deposits not yet cleared
+    lien_amount = Column(Numeric(precision=18, scale=2), default=0.00)
+    uncleared_funds = Column(Numeric(precision=18, scale=2), default=0.00)
 
-    status = Column(SQLAlchemyEnum(AccountStatusEnum), default=AccountStatusEnum.ACTIVE, nullable=False)
+    status = Column(SQLAlchemyEnum(AccountStatusEnum), default=AccountStatusEnum.ACTIVE, nullable=False, index=True)
+    is_post_no_debit = Column(Boolean, default=False, nullable=False, index=True) # PND status
+    block_reason = Column(String, nullable=True) # Reason if status is BLOCKED
 
     # For Fixed Deposits
-    fd_maturity_date = Column(DateTime(timezone=True), nullable=True)
-    fd_interest_rate = Column(Numeric(precision=5, scale=2), nullable=True) # e.g. 5.75%
-    fd_principal = Column(Numeric(precision=18, scale=4), nullable=True)
+    fd_maturity_date = Column(Date, nullable=True) # Changed to Date
+    fd_interest_rate_pa = Column(Numeric(precision=5, scale=2), nullable=True) # e.g. 5.75%
+    fd_principal_amount = Column(Numeric(precision=18, scale=2), nullable=True)
+    # fd_rollover_instruction = Column(String, nullable=True) # e.g. "ROLLOVER_PRINCIPAL_INTEREST", "PAYOUT_TO_LINKED_ACCOUNT"
 
     # Interest accrual related
-    last_interest_accrual_date = Column(DateTime(timezone=True), nullable=True)
-    accrued_interest = Column(Numeric(precision=18, scale=4), default=0.0000)
+    last_interest_accrual_run_date = Column(Date, nullable=True) # Changed to Date
+    accrued_interest_payable = Column(Numeric(precision=18, scale=2), default=0.00) # Interest accrued but not yet paid to account
+    accrued_interest_receivable = Column(Numeric(precision=18, scale=2), default=0.00) # For loan accounts (asset)
 
     # Dormancy related
-    last_activity_date = Column(DateTime(timezone=True), server_default=func.now())
+    last_customer_initiated_activity_date = Column(DateTime(timezone=True), server_default=func.now()) # Use DateTime for precision
 
-    opened_date = Column(DateTime(timezone=True), server_default=func.now())
-    closed_date = Column(DateTime(timezone=True), nullable=True)
+    opened_date = Column(Date, server_default=func.current_date(), nullable=False) # Changed to Date
+    closed_date = Column(Date, nullable=True) # Changed to Date
 
     # Relationships
-    # customer = relationship("Customer", back_populates="accounts") # From customer_identity_management.models.Customer
-    # transactions = relationship("LedgerTransaction", back_populates="account") # See LedgerTransaction below
+    customer = relationship("Customer") # Add back_populates="accounts" in Customer model
+    product_config = relationship("ProductConfig") # Add back_populates in ProductConfig model
+    ledger_entries = relationship("LedgerEntry", back_populates="account", order_by="LedgerEntry.id")
 
     def __repr__(self):
         return f"<Account(account_number='{self.account_number}', type='{self.account_type.value}', balance='{self.ledger_balance}')>"
@@ -76,68 +88,71 @@ class LedgerEntry(Base):
     __tablename__ = "ledger_entries"
 
     id = Column(Integer, primary_key=True, index=True)
-    transaction_id = Column(String, index=True, nullable=False) # Link to a master transaction record
+    # This should link to the master transaction record in transaction_management module
+    financial_transaction_id = Column(String, index=True, nullable=False)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
 
-    entry_type = Column(SQLAlchemyEnum(TransactionTypeEnum), nullable=False) # DEBIT or CREDIT
-    amount = Column(Numeric(precision=18, scale=4), nullable=False)
-    currency = Column(SQLAlchemyEnum(CurrencyEnum), nullable=False) # Ensure consistency with account currency
+    entry_type = Column(SQLAlchemyEnum(TransactionTypeEnum), nullable=False)
+    amount = Column(Numeric(precision=18, scale=2), nullable=False) # Standard 2 decimal places
+    currency = Column(SQLAlchemyEnum(CurrencyEnum), nullable=False)
 
-    narration = Column(String, nullable=False)
-    transaction_date = Column(DateTime(timezone=True), server_default=func.now(), index=True) # When the transaction was booked
-    value_date = Column(DateTime(timezone=True), server_default=func.now(), index=True) # When the funds are considered available/valued
+    narration = Column(String(255), nullable=False) # Max length for narration
+    # Booking date (when it hits the ledger)
+    transaction_date = Column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
+    # Value date (when funds are considered of value - important for interest, float)
+    value_date = Column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
 
-    balance_before = Column(Numeric(precision=18, scale=4))
-    balance_after = Column(Numeric(precision=18, scale=4)) # Ledger balance after this entry
+    balance_before = Column(Numeric(precision=18, scale=2), nullable=False)
+    balance_after = Column(Numeric(precision=18, scale=2), nullable=False)
 
-    # Reference to other systems/details
-    # e.g., NIP_session_id, reversal_of_transaction_id, teller_id, channel (ATM, POS, WEB, MOBILE)
-    channel = Column(String, nullable=True)
-    reference_number = Column(String, unique=True, index=True, nullable=True) # External ref, e.g., payment gateway ref
+    channel = Column(String(50), nullable=True, index=True) # e.g., ATM, POS, NIP, WEB, MOBILE, COUNTER
+    # External reference, not necessarily unique across all entries (e.g. NIP session ID can appear for debit, credit, fees)
+    # But can be indexed for faster lookups.
+    external_reference_number = Column(String(100), index=True, nullable=True)
 
-    # account = relationship("Account", back_populates="ledger_entries") # Relationship to Account
+    is_reversal_entry = Column(Boolean, default=False)
+    # original_ledger_entry_id = Column(Integer, ForeignKey("ledger_entries.id"), nullable=True) # If this entry reverses another
+
+    account = relationship("Account", back_populates="ledger_entries")
 
     def __repr__(self):
         return f"<LedgerEntry(id={self.id}, acc_id={self.account_id}, type='{self.entry_type.value}', amt='{self.amount}')>"
 
-# This is a simplified General Ledger Account structure. A full GL is much more complex.
 class GeneralLedgerAccount(Base):
     __tablename__ = "gl_accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    gl_code = Column(String, unique=True, index=True, nullable=False) # e.g., "1001001" for Cash NGN
-    name = Column(String, nullable=False) # e.g., "Cash Naira"
+    gl_code = Column(String(20), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
     currency = Column(SQLAlchemyEnum(CurrencyEnum), nullable=False)
-    is_control_account = Column(Boolean, default=False) # If it's a control account for customer ledgers
-    # Other GL properties like type (Asset, Liability, Equity, Income, Expense), parent_gl_code etc.
+    # gl_type = Column(String) # ASSET, LIABILITY, EQUITY, INCOME, EXPENSE (important for financial statements)
+    # parent_gl_code = Column(String(20), ForeignKey("gl_accounts.gl_code"), nullable=True) # For hierarchical chart of accounts
+    is_control_account = Column(Boolean, default=False) # If it's a control account for customer/subsidiary ledgers
+    current_balance = Column(Numeric(precision=20, scale=2), default=0.00, nullable=False) # GLs also have balances
 
-# Note: For a true double-entry system, each financial transaction would typically result
-# in at least two LedgerEntry records (one DEBIT, one CREDIT) that must balance.
-# A master "FinancialTransaction" table might orchestrate these entries.
-
-# Example of a master transaction table (optional, can be part of transaction_management)
-class FinancialTransaction(Base):
-    __tablename__ = "financial_transactions" # Could be in transaction_management
-    id = Column(String, primary_key=True, index=True) # Unique transaction ID (e.g. UUID)
-    description = Column(String)
-    status = Column(String) # PENDING, SUCCESSFUL, FAILED, REVERSED
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    # entries = relationship("LedgerEntry"...) # if LedgerEntry.transaction_id is a ForeignKey to this.
-    # This table would hold the overall status of a transaction that might involve multiple ledger postings.
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-# InterestAccrualLog might be useful for tracking daily accruals before posting
-class InterestAccrualLog(Base):
-    __tablename__ = "interest_accrual_logs"
+# Removed FinancialTransaction model from here, it belongs in transaction_management.
+
+class InterestAccrualLog(Base): # Tracking daily accruals before posting
+    __tablename__ = "interest_accrual_logs" # Renamed from interest_accrual_logs
     id = Column(Integer, primary_key=True)
-    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
-    accrual_date = Column(DateTime(timezone=True), nullable=False)
-    amount_accrued = Column(Numeric(precision=18, scale=4), nullable=False)
-    interest_rate_used = Column(Numeric(precision=5, scale=2), nullable=False)
-    balance_subject_to_interest = Column(Numeric(precision=18, scale=4), nullable=False)
-    is_posted_to_account = Column(Boolean, default=False) # True when this amount is credited to account.accrued_interest
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
+    accrual_date = Column(Date, nullable=False) # Accrual is typically daily
+    amount_accrued = Column(Numeric(precision=18, scale=4), nullable=False) # Allow more precision for accrual calculation
+    interest_rate_pa_used = Column(Numeric(precision=10, scale=4), nullable=False) # Store the rate used
+    balance_subject_to_interest = Column(Numeric(precision=18, scale=2), nullable=False)
 
-# To run:
-# from sqlalchemy import create_engine
-# from weezy_cbs.database import DATABASE_URL
-# engine = create_engine(DATABASE_URL)
-# Base.metadata.create_all(bind=engine)
+    is_posted_to_account_ledger = Column(Boolean, default=False) # True when this amount is credited to account's ledger_balance
+    posting_date = Column(Date, nullable=True) # Date when it was posted
+    # related_ledger_entry_id = Column(Integer, ForeignKey("ledger_entries.id"), nullable=True) # Link to the credit entry
+
+    account = relationship("Account") # Add backref if needed
+
+# Note: For relationships to tables in other modules (e.g. Customer, ProductConfig),
+# ensure string foreign keys are used if Base is not shared, or use the shared Base.
+# Example: customer_id = Column(Integer, ForeignKey("customers.id"), ...)
+# This assumes 'customers' table is defined elsewhere but known to SQLAlchemy metadata.
+# Proper setup involves all models registering with the same `Base` from `weezy_cbs.database`.
