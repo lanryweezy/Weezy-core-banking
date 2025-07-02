@@ -1,147 +1,203 @@
 # Tools for Finance Insights Agent
 
-# from langchain.tools import tool
-# import pandas as pd
-# import numpy as np
-# from prophet import Prophet # For forecasting (example library)
-# import matplotlib.pyplot as plt # For generating charts
-# import base64 # To encode images for JSON transport
-# from io import BytesIO
+from langchain.tools import tool
+from typing import Dict, Any, List, Optional, Literal
+import random
+import logging
+from datetime import datetime, timedelta, date
 
-# # Mock data fetching function (in reality, this would query a DB or API)
-# def _get_customer_transaction_data(customer_id: str, period_months: int = 12) -> pd.DataFrame:
-#     # Generate sample data
-#     rng = pd.date_range(end=pd.Timestamp.now(), periods=period_months * 30, freq='D')
-#     data = pd.DataFrame({
-#         'ds': rng,
-#         'amount': np.random.uniform(-50000, 200000, size=len(rng)), # income and expenses
-#         'category': np.random.choice(['Salary', 'Groceries', 'Transport', 'Utilities', 'Entertainment', 'Savings', 'LoanRepayment'], size=len(rng))
-#     })
-#     data.loc[data['category'] == 'Salary', 'amount'] = abs(data['amount']) # Salaries are positive
-#     data.loc[data['category'] != 'Salary', 'amount'] = -abs(data['amount']) # Expenses are negative
-#     return data.rename(columns={'amount': 'y'}) # Prophet expects 'ds' and 'y'
+# Assuming schemas might be imported for type hinting if complex objects are passed
+# from .schemas import ... # Example
 
-# @tool("FinancialDataAnalysisTool")
-# def data_analysis_tool(customer_id: str, data_source_config: dict) -> dict:
-#     """
-#     Analyzes historical financial data (transactions, balances) for a customer or segment.
-#     Calculates spending by category, income vs. expense ratios, savings rate, etc.
-#     Input: customer_id (or segment_id), data_source_config (details on how to get data).
-#     Output: Dictionary containing structured analysis results (e.g., spending breakdown).
-#     """
-#     print(f"Data Analysis Tool: Analyzing data for {customer_id} using {data_source_config}")
-#     # df = _get_customer_transaction_data(customer_id, period_months=data_source_config.get("period_months", 12))
-#     # spending_df = df[df['y'] < 0].copy()
-#     # spending_df['y'] = abs(spending_df['y'])
-#     # spending_by_category = spending_df.groupby('category')['y'].sum().sort_values(ascending=False).to_dict()
+logger = logging.getLogger(__name__)
 
-#     # income_df = df[df['y'] > 0]
-#     # total_income = income_df['y'].sum()
-#     # total_spending = spending_df['y'].sum()
-#     # savings_rate = (total_income - total_spending) / total_income if total_income > 0 else 0
+# --- Mock Data Generation for Tool ---
+def _generate_mock_transactions(customer_id: str, start_date: date, end_date: date) -> List[Dict[str, Any]]:
+    """Generates a list of mock transactions for a given period."""
+    transactions: List[Dict[str, Any]] = []
+    num_days = (end_date - start_date).days + 1
 
-#     # Mock analysis
-#     spending_by_category = {"Groceries": 50000, "Transport": 25000, "Utilities": 15000, "Entertainment": 20000}
-#     total_income = 200000
-#     total_spending = 110000
-#     savings_rate = 0.45
+    # Income sources and spending categories
+    income_sources = ["Salary", "Business Revenue", "Investment Returns", "Freelance Gig"]
+    spending_categories = ["Groceries", "Transport", "Utilities", "Rent/Mortgage", "Entertainment",
+                           "Shopping", "Healthcare", "Education", "Travel", "Miscellaneous"]
 
-#     return {
-#         "spending_by_category": spending_by_category,
-#         "total_income": total_income,
-#         "total_spending": total_spending,
-#         "savings_rate": savings_rate,
-#         "analysis_period_months": data_source_config.get("period_months", 12)
-#     }
+    # Simulate a primary income source (e.g., Salary) occurring monthly or bi-weekly
+    # For simplicity, let's assume one major income event if period covers it.
+    if num_days >= 25: # If period is roughly a month or more
+        transactions.append({
+            "date": (end_date - timedelta(days=random.randint(0,5))).isoformat(), # Near end of period
+            "description": random.choice(["Monthly Salary", "Main Business Income"]),
+            "amount": random.uniform(150000, 700000), # Positive for income
+            "category": "Salary/PrimaryIncome", # Special category for primary income
+            "type": "Credit"
+        })
 
-# @tool("TimeSeriesForecastingTool")
-# def forecasting_tool(customer_id: str, data_source_config: dict, forecast_horizon_months: int) -> dict:
-#     """
-#     Performs time-series forecasting (e.g., cash flow, balance projection) using models like Prophet or ARIMA.
-#     Input: customer_id, data_source_config, and forecast_horizon_months.
-#     Output: Dictionary with forecast data (dates and predicted values).
-#     """
-#     print(f"Forecasting Tool: Generating {forecast_horizon_months}-month forecast for {customer_id}")
-#     # df = _get_customer_transaction_data(customer_id, period_months=data_source_config.get("historical_months", 24))
-#     # # Aggregate to daily net cash flow for forecasting
-#     # daily_cashflow = df.groupby('ds')['y'].sum().reset_index()
+    # Simulate other smaller incomes
+    for _ in range(random.randint(0, num_days // 15)): # 0 to ~2 smaller incomes per month
+        transactions.append({
+            "date": (start_date + timedelta(days=random.randint(0, num_days-1))).isoformat(),
+            "description": random.choice(["Side Hustle Payment", "Investment Dividend", "Gift Received"]),
+            "amount": random.uniform(5000, 50000),
+            "category": random.choice(income_sources[1:]), # Exclude primary source here
+            "type": "Credit"
+        })
 
-#     # model = Prophet()
-#     # model.fit(daily_cashflow)
-#     # future = model.make_future_dataframe(periods=forecast_horizon_months * 30)
-#     # forecast_df = model.predict(future)
+    # Simulate spending transactions
+    num_spending_transactions = random.randint(num_days // 2, num_days * 2) # 0.5 to 2 spending txns per day
+    for _ in range(num_spending_transactions):
+        transactions.append({
+            "date": (start_date + timedelta(days=random.randint(0, num_days-1))).isoformat(),
+            "description": f"{random.choice(spending_categories)} purchase at Merchant {random.randint(100,999)}",
+            "amount": -random.uniform(500, 25000), # Negative for spending
+            "category": random.choice(spending_categories),
+            "type": "Debit"
+        })
 
-#     # # Select relevant columns (ds, yhat, yhat_lower, yhat_upper)
-#     # forecast_output = forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].tail(forecast_horizon_months * 30)
-#     # forecast_output['ds'] = forecast_output['ds'].dt.strftime('%Y-%m-%d') # Convert dates to string for JSON
-
-#     # Mock forecast
-#     forecast_dates = pd.date_range(start=pd.Timestamp.now() + pd.Timedelta(days=1), periods=forecast_horizon_months*4, freq='W')
-#     forecast_data = {
-#         "dates": [d.strftime('%Y-%m-%d') for d in forecast_dates],
-#         "predicted_cashflow": np.random.randint(-10000, 10000, size=len(forecast_dates)).tolist()
-#     }
-#     return {"forecast_type": "weekly_net_cashflow", "horizon_months": forecast_horizon_months, "data": forecast_data}
-
-# @tool("DataVisualizationTool")
-# def visualization_tool(viz_type: str, data: dict, title: str) -> str:
-#     """
-#     Generates visualizations (charts, graphs) from financial data.
-#     Input: viz_type ('pie_chart_spending', 'bar_chart_income_expense', 'line_forecast'), data (dict), title (str).
-#     Output: Base64 encoded string of the generated image (e.g., PNG).
-#     """
-#     print(f"Visualization Tool: Generating '{viz_type}' titled '{title}'")
-#     # plt.figure(figsize=(8, 6))
-#     # if viz_type == 'pie_chart_spending' and 'spending_by_category' in data:
-#     #     labels = data['spending_by_category'].keys()
-#     #     sizes = data['spending_by_category'].values()
-#     #     plt.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
-#     #     plt.axis('equal') # Equal aspect ratio ensures that pie is drawn as a circle.
-#     # elif viz_type == 'line_forecast' and 'dates' in data and 'predicted_cashflow' in data:
-#     #     plt.plot(pd.to_datetime(data['dates']), data['predicted_cashflow'], marker='o')
-#     #     plt.xticks(rotation=45)
-#     #     plt.ylabel("Predicted Cashflow (NGN)")
-#     #     plt.grid(True)
-#     # else:
-#     #     plt.text(0.5, 0.5, 'Unsupported chart type or data missing', ha='center', va='center')
-
-#     # plt.title(title)
-#     # buf = BytesIO()
-#     # plt.savefig(buf, format="png")
-#     # plt.close() # Close the figure to free memory
-#     # image_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-#     # return image_base64
-#     return "mock_base64_encoded_image_string" # Placeholder
-
-# @tool("RecommendationEngineTool")
-# def recommendation_engine_tool(customer_id: str, analysis_results: dict, financial_goals: list = None) -> list:
-#     """
-#     Generates personalized financial recommendations (budgeting, savings, investments)
-#     based on analysis results and customer's stated goals (if any).
-#     Input: customer_id, analysis_results (from data_analysis_tool), optional list of financial_goals.
-#     Output: List of recommendation strings or structured recommendation objects.
-#     """
-#     print(f"Recommendation Engine: Generating recommendations for {customer_id}")
-#     recommendations = []
-#     # if analysis_results.get("savings_rate", 0) < 0.1:
-#     #     recommendations.append("Your savings rate is a bit low. Consider tracking your expenses in categories like 'Entertainment' or 'Dining Out' to find areas to save.")
-#     # if analysis_results.get("spending_by_category", {}).get("Subscriptions", 0) > 10000:
-#     #     recommendations.append("Review your subscriptions. You might be paying for services you no longer use.")
-
-#     # # Mock recommendations based on goals
-#     # if financial_goals:
-#     #     if "buy_a_car" in financial_goals:
-#     #         recommendations.append("To save for a car, consider setting up an automated monthly transfer to a dedicated savings account. We have high-yield options available.")
-#     #     if "emergency_fund" in financial_goals and analysis_results.get("total_income",0) > 0 :
-#     #         recommendations.append(f"Aim for an emergency fund covering 3-6 months of expenses (approx. NGN {analysis_results.get('total_spending',0)*3/12 :.0f} - NGN {analysis_results.get('total_spending',0)*6/12 :.0f} per month for your current spending).")
-
-#     if not recommendations:
-#         recommendations.append("Continue managing your finances well! Consider exploring investment options to grow your savings further.")
-
-#     return [{"type": "general", "text": rec} for rec in recommendations]
+    # Sort by date (optional, but good practice)
+    transactions.sort(key=lambda x: x["date"])
+    return transactions
 
 
-# # List of tools for this agent
-# # tools = [data_analysis_tool, forecasting_tool, visualization_tool, recommendation_engine_tool]
+@tool("TransactionAggregationTool")
+def transaction_aggregation_tool(
+    customer_id: str,
+    period: Literal["last_7_days", "last_30_days", "current_month", "last_month", "last_3_months", "year_to_date"] = "last_30_days",
+    custom_start_date: Optional[str] = None, # YYYY-MM-DD
+    custom_end_date: Optional[str] = None    # YYYY-MM-DD
+) -> Dict[str, Any]:
+    """
+    Simulates fetching and aggregating transactions for a customer over a specified period.
+    Calculates total income, total spending, net cashflow, and breakdowns by category/source.
 
-print("Finance Insights Agent tools placeholder.")
+    Args:
+        customer_id (str): The customer's unique identifier.
+        period (str): Predefined period like "last_30_days", "current_month", etc.
+                      Ignored if custom_start_date and custom_end_date are provided.
+        custom_start_date (Optional[str]): Custom start date in YYYY-MM-DD format.
+        custom_end_date (Optional[str]): Custom end date in YYYY-MM-DD format.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing aggregated financial data:
+                        'customer_id', 'period_start_date', 'period_end_date',
+                        'total_income_ngn', 'total_spending_ngn', 'net_cashflow_ngn',
+                        'spending_by_category': Dict[str, float],
+                        'income_by_source': Dict[str, float],
+                        'raw_transaction_count': int,
+                        'status': 'Success' or 'Error',
+                        'message': Optional error message.
+    """
+    logger.info(f"TransactionAggregationTool: Aggregating transactions for customer '{customer_id}', period='{period}', custom_start='{custom_start_date}', custom_end='{custom_end_date}'")
+
+    today = date.today()
+    start_dt: date
+    end_dt: date = today
+
+    if custom_start_date and custom_end_date:
+        try:
+            start_dt = date.fromisoformat(custom_start_date)
+            end_dt = date.fromisoformat(custom_end_date)
+            if start_dt > end_dt:
+                return {"status": "Error", "message": "Custom start date cannot be after custom end date."}
+        except ValueError:
+            return {"status": "Error", "message": "Invalid custom date format. Please use YYYY-MM-DD."}
+    else:
+        if period == "last_7_days":
+            start_dt = today - timedelta(days=6)
+        elif period == "last_30_days":
+            start_dt = today - timedelta(days=29)
+        elif period == "current_month":
+            start_dt = today.replace(day=1)
+        elif period == "last_month":
+            first_day_current_month = today.replace(day=1)
+            end_dt = first_day_current_month - timedelta(days=1)
+            start_dt = end_dt.replace(day=1)
+        elif period == "last_3_months":
+            # Approximately last 90 days for simplicity for mock
+            start_dt = today - timedelta(days=89)
+        elif period == "year_to_date":
+            start_dt = today.replace(month=1, day=1)
+        else:
+            return {"status": "Error", "message": f"Unsupported period: {period}. Supported are: last_7_days, last_30_days, current_month, last_month, last_3_months, year_to_date, or custom dates."}
+
+    # Simulate fetching transactions (in a real system, this would query a database)
+    if "error_customer" in customer_id.lower(): # Simulate an error case
+        return {"status": "Error", "message": f"Simulated error fetching data for customer {customer_id}."}
+
+    mock_transactions = _generate_mock_transactions(customer_id, start_dt, end_dt)
+
+    total_income = 0.0
+    total_spending = 0.0
+    spending_by_category: Dict[str, float] = {}
+    income_by_source: Dict[str, float] = {}
+
+    for txn in mock_transactions:
+        amount = txn["amount"]
+        category = txn["category"]
+        if amount > 0: # Income
+            total_income += amount
+            income_by_source[category] = income_by_source.get(category, 0) + amount
+        else: # Spending (amount is negative)
+            total_spending += abs(amount)
+            spending_by_category[category] = spending_by_category.get(category, 0) + abs(amount)
+
+    net_cashflow = total_income - total_spending
+
+    logger.info(f"TransactionAggregationTool: Aggregation complete for customer '{customer_id}'. Income: {total_income:.2f}, Spending: {total_spending:.2f}")
+
+    return {
+        "status": "Success",
+        "customer_id": customer_id,
+        "period_start_date": start_dt.isoformat(),
+        "period_end_date": end_dt.isoformat(),
+        "total_income_ngn": round(total_income, 2),
+        "total_spending_ngn": round(total_spending, 2),
+        "net_cashflow_ngn": round(net_cashflow, 2),
+        "spending_by_category": {k: round(v,2) for k,v in spending_by_category.items()},
+        "income_by_source": {k: round(v,2) for k,v in income_by_source.items()},
+        "raw_transaction_count": len(mock_transactions),
+        "message": f"Successfully aggregated {len(mock_transactions)} transactions."
+    }
+
+
+# Placeholder for other insight tools (forecasting, visualization, recommendation)
+# @tool("CashflowForecastingTool") ...
+# @tool("FinancialVisualizationTool") ...
+# @tool("InvestmentRecommendationTool") ...
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    print("--- Testing FinanceInsightsAgent Tools ---")
+
+    print("\n1. Testing TransactionAggregationTool:")
+    cust_id = "CUST-FIN-001"
+
+    res_last_30d = transaction_aggregation_tool.run({"customer_id": cust_id, "period": "last_30_days"})
+    print(f"  Last 30 Days for {cust_id}: Status={res_last_30d['status']}")
+    if res_last_30d['status'] == 'Success':
+        print(f"    Income: {res_last_30d['total_income_ngn']}, Spending: {res_last_30d['total_spending_ngn']}, Net: {res_last_30d['net_cashflow_ngn']}")
+        print(f"    Spending Categories: {json.dumps(res_last_30d['spending_by_category'], indent=2)}")
+        print(f"    Income Sources: {json.dumps(res_last_30d['income_by_source'], indent=2)}")
+
+    res_current_month = transaction_aggregation_tool.run({"customer_id": cust_id, "period": "current_month"})
+    print(f"\n  Current Month for {cust_id}: Status={res_current_month['status']}")
+    if res_current_month['status'] == 'Success':
+         print(f"    Income: {res_current_month['total_income_ngn']}, TxnCount: {res_current_month['raw_transaction_count']}")
+
+    res_custom_period = transaction_aggregation_tool.run({
+        "customer_id": cust_id,
+        "custom_start_date": (date.today() - timedelta(days=10)).isoformat(),
+        "custom_end_date": date.today().isoformat()
+    })
+    print(f"\n  Custom Period (last 10 days) for {cust_id}: Status={res_custom_period['status']}")
+    if res_custom_period['status'] == 'Success':
+         print(f"    Net Cashflow: {res_custom_period['net_cashflow_ngn']}")
+
+    res_error_period = transaction_aggregation_tool.run({"customer_id": cust_id, "period": "unknown_period"})
+    print(f"\n  Error Period for {cust_id}: Status={res_error_period['status']}, Message='{res_error_period.get('message')}'")
+
+    res_error_customer = transaction_aggregation_tool.run({"customer_id": "error_customer_id", "period": "last_7_days"})
+    print(f"\n  Error Customer: Status={res_error_customer['status']}, Message='{res_error_customer.get('message')}'")
+
+    print("\nFinance Insights Agent tools (TransactionAggregationTool implemented with mocks).")
