@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, validator, HttpUrl
 from typing import List, Optional, Dict, Any, Union
-from datetime import datetime
+from datetime import datetime, date # Added date
 import json
 
 from .models import ChannelTypeEnum # Import the enum from models
@@ -8,7 +8,6 @@ from .models import ChannelTypeEnum # Import the enum from models
 # --- DigitalUserProfile Schemas ---
 class DigitalUserProfileBase(BaseModel):
     username: str = Field(..., max_length=100, description="Username for digital channels, could be email or custom ID")
-    # customer_id is set internally, not by client on creation usually
     is_active: bool = True
     preferences_json: Optional[Dict[str, Any]] = Field(None, description="User preferences like language, theme")
     notification_settings_json: Optional[Dict[str, Any]] = Field(None, description="Notification preferences per type/channel")
@@ -24,19 +23,18 @@ class DigitalUserProfileBase(BaseModel):
 
 class DigitalUserProfileCreate(DigitalUserProfileBase):
     password: str = Field(..., min_length=8)
-    customer_id: int # Must be linked to an existing customer
-    # Security questions can be added here if set during creation
+    customer_id: int
     security_question_1: Optional[str] = Field(None, max_length=255)
-    security_answer_1: Optional[str] = Field(None, min_length=3) # Plain answer, service will hash
+    security_answer_1: Optional[str] = Field(None, min_length=3)
 
-class DigitalUserProfileUpdate(BaseModel): # Partial updates
+class DigitalUserProfileUpdate(BaseModel):
     username: Optional[str] = Field(None, max_length=100)
     is_active: Optional[bool] = None
     preferences_json: Optional[Dict[str, Any]] = None
     notification_settings_json: Optional[Dict[str, Any]] = None
-    is_verified_email: Optional[bool] = None # Admin/system might update this
-    is_verified_phone: Optional[bool] = None # Admin/system might update this
-    locked_until: Optional[datetime] = None # For admin to unlock/lock
+    is_verified_email: Optional[bool] = None
+    is_verified_phone: Optional[bool] = None
+    locked_until: Optional[datetime] = None
 
     @validator('preferences_json', 'notification_settings_json', pre=True)
     def parse_update_json_string(cls, value):
@@ -72,31 +70,30 @@ class DigitalUserPasswordChangeSchema(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 class DigitalUserTransactionPinSetSchema(BaseModel):
-    password: str # Current login password for verification
-    new_pin: str = Field(..., min_length=4, max_length=6, regex=r"^\d{4,6}$") # 4-6 digit PIN
+    password: str
+    new_pin: str = Field(..., min_length=4, max_length=6, regex=r"^\d{4,6}$")
 
 class DigitalUserTransactionPinChangeSchema(BaseModel):
     current_pin: str = Field(..., min_length=4, max_length=6, regex=r"^\d{4,6}$")
     new_pin: str = Field(..., min_length=4, max_length=6, regex=r"^\d{4,6}$")
-    password: Optional[str] = None # Optional: might require password if PIN is forgotten/reset
+    password: Optional[str] = None
 
 class DigitalUserLoginSchema(BaseModel):
     username: str
     password: str
-    channel: ChannelTypeEnum # Channel through which login is attempted
-    device_identifier: Optional[str] = None # For mobile app logins
-    ip_address: Optional[str] = None # To be captured by endpoint
-    user_agent: Optional[str] = None # To be captured by endpoint
+    channel: ChannelTypeEnum
+    device_identifier: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
 
 class DigitalUserTokenSchema(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user_profile: DigitalUserProfileResponse
-    # session_jti: Optional[str] = None # JWT ID for session tracking
 
 class OTPRequestSchema(BaseModel):
-    identifier: str # e.g., phone number or email, depending on context
-    otp_purpose: str # e.g., "LOGIN_VERIFICATION", "DEVICE_REGISTRATION", "PASSWORD_RESET"
+    identifier: str
+    otp_purpose: str
 
 class OTPVerifySchema(BaseModel):
     identifier: str
@@ -113,14 +110,13 @@ class RegisteredDeviceBase(BaseModel):
     push_notification_token: Optional[str] = Field(None, max_length=512)
 
 class RegisteredDeviceCreate(RegisteredDeviceBase):
-    # digital_user_profile_id is usually derived from authenticated user context
     pass
 
 class RegisteredDeviceUpdate(BaseModel):
     device_name: Optional[str] = Field(None, max_length=100)
     is_trusted: Optional[bool] = None
-    status: Optional[str] = Field(None, max_length=20) # e.g. ACTIVE, BLOCKED by user/admin
-    push_notification_token: Optional[str] = Field(None, max_length=512) # For updates if token changes
+    status: Optional[str] = Field(None, max_length=20)
+    push_notification_token: Optional[str] = Field(None, max_length=512)
 
 
 class RegisteredDeviceResponse(RegisteredDeviceBase):
@@ -155,50 +151,39 @@ class SessionLogResponse(BaseModel):
         use_enum_values = True
 
 # --- USSD Schemas ---
-class USSDRequestSchema(BaseModel): # Incoming request from USSD Gateway to Bank's USSD App
-    sessionId: str # Typically provided by gateway
-    msisdn: str # User's phone number
-    serviceCode: str # The USSD shortcode dialed, e.g., *123#
-    ussdString: Optional[str] = Field(None, description="User's input, empty for initial request") # Also known as text or userInput
-    # Other potential fields from gateway: networkCode, newRequest (boolean)
+class USSDRequestSchema(BaseModel):
+    sessionId: str
+    msisdn: str
+    serviceCode: str
+    ussdString: Optional[str] = Field(None, description="User's input, empty for initial request")
 
-class USSDResponseSchema(BaseModel): # Outgoing response from Bank's USSD App to Gateway
-    # Based on common gateway requirements like Africa's Talking, NIBSS USSD Gateway (NGN specific)
-    # Format: "CON Welcome to WeezyBank\n1. Check Balance\n2. Transfer" OR "END Your balance is NGN 5000"
+class USSDResponseSchema(BaseModel):
     response_string: str = Field(..., description="The text to display to the user. Prefix with CON or END.")
-    # Some gateways might use a structured response:
-    # menu_text: str
-    # is_final: bool # True for END, False for CON
 
-class USSDSessionData(BaseModel): # Data stored within a USSD session
+class USSDSessionData(BaseModel):
     current_menu_code: Optional[str] = None
     language_code: str = "en"
-    # Example collected data:
     amount: Optional[float] = None
     beneficiary_account: Optional[str] = None
     pin_attempts: int = 0
-    # Can store any other state needed for the flow
 
 class USSDPinVerificationRequest(BaseModel):
-    session_id: str # To link back to the USSD session
+    session_id: str
     pin: str = Field(..., min_length=4, max_length=4, regex=r"^\d{4}$")
 
 
 # --- NotificationLog Schemas ---
-class NotificationCreateSchema(BaseModel): # Internal schema for triggering a notification
-    # customer_id or digital_user_profile_id can be used to find recipient_identifier
+class NotificationCreateSchema(BaseModel):
     customer_id: Optional[int] = None
     digital_user_profile_id: Optional[int] = None
     recipient_identifier: Optional[str] = Field(None, max_length=255, description="Explicit phone/email if not deriving from profile")
-
-    channel_type: ChannelTypeEnum # SMS, EMAIL, PUSH_NOTIFICATION_APP
+    channel_type: ChannelTypeEnum
     message_type: str = Field(..., max_length=50, description="e.g., OTP, TRANSACTION_ALERT, WELCOME_EMAIL")
-    subject: Optional[str] = Field(None, max_length=255) # For email
+    subject: Optional[str] = Field(None, max_length=255)
     content_params: Optional[Dict[str, Any]] = Field(None, description="Parameters for template-based content generation")
     direct_content: Optional[str] = Field(None, description="Use if content is not template-based")
-    reference_id: Optional[str] = Field(None, max_length=50) # e.g., transaction_id
+    reference_id: Optional[str] = Field(None, max_length=50)
 
-    # Ensure either content_params (for template) or direct_content is provided
     @validator('direct_content', always=True)
     def check_content_or_params_exist(cls, v, values):
         if not v and not values.get('content_params'):
@@ -215,7 +200,7 @@ class NotificationLogResponse(BaseModel):
     recipient_identifier: str
     message_type: Optional[str] = None
     subject: Optional[str] = None
-    content: str # The actual content sent
+    content: str
     status: str
     failure_reason: Optional[str] = None
     external_message_id: Optional[str] = None
@@ -230,8 +215,8 @@ class NotificationLogResponse(BaseModel):
 # --- Chatbot Schemas ---
 class ChatbotRequestSchema(BaseModel):
     session_id: str = Field(..., description="Unique ID for the chat session")
-    user_id: Optional[str] = Field(None, description="Authenticated user ID if available, else anonymous") # Could be digital_user_profile_id
-    customer_id: Optional[int] = None # If known
+    user_id: Optional[str] = Field(None, description="Authenticated user ID if available, else anonymous")
+    customer_id: Optional[int] = None
     message_text: str = Field(..., description="User's message to the chatbot")
     channel: ChannelTypeEnum = Field(..., description="e.g., WHATSAPP_BOT, WEB_CHAT")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata like language, location if available")
@@ -240,8 +225,7 @@ class ChatbotResponseSchema(BaseModel):
     session_id: str
     bot_response_text: str
     suggested_actions: Optional[List[str]] = None
-    # Additional fields like detected_intent, context_data can be added
-    is_escalated: bool = False # If bot decided to escalate to human
+    is_escalated: bool = False
 
 class ChatbotInteractionLogResponse(BaseModel):
     id: int
@@ -259,18 +243,56 @@ class ChatbotInteractionLogResponse(BaseModel):
     is_escalated: bool
 
     @validator('entities_extracted_json', pre=True)
-    def parse_json_string_if_needed(cls, value):
+    def parse_json_string_if_needed(cls, value): # Renamed validator
         if isinstance(value, str):
             try:
                 return json.loads(value)
             except json.JSONDecodeError:
-                # Log error or return as is, depending on desired strictness
                 return {"error": "Invalid JSON string in entities_extracted_json"}
         return value
 
     class Config:
         orm_mode = True
         use_enum_values = True
+
+# --- Schemas for Customer Dashboard ---
+class DashboardAccountSummarySchema(BaseModel):
+    account_id: int
+    account_number_masked: str
+    account_type: str
+    available_balance: float
+    currency: str
+    account_nickname: Optional[str] = None
+
+class DashboardTransactionSummarySchema(BaseModel):
+    id: str
+    date: datetime
+    description: str
+    amount: float
+    currency: str
+    transaction_type: str
+    status: str
+
+class DashboardLoanSummarySchema(BaseModel):
+    loan_account_id: int
+    loan_product_name: str
+    outstanding_principal: float
+    outstanding_interest: float
+    total_outstanding: float
+    currency: str
+    next_repayment_date: Optional[date] = None
+    next_repayment_amount: Optional[float] = None
+
+class CustomerDashboardSummaryResponse(BaseModel):
+    welcome_name: str
+    last_login_at: Optional[datetime] = None
+    accounts: List[DashboardAccountSummarySchema] = []
+    recent_transactions: List[DashboardTransactionSummarySchema] = []
+    active_loans: List[DashboardLoanSummarySchema] = []
+    unread_notification_count: int = 0
+
+    class Config:
+        orm_mode = True
 
 # --- Paginated Responses for Digital Channels ---
 class PaginatedDigitalUserProfileResponse(BaseModel):

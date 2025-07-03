@@ -272,6 +272,133 @@ class DigitalUserProfileService(BaseDigitalChannelService):
             self._audit_log(db, f"OTP_VERIFY_FAIL_{purpose}", db_profile, f"OTP verification failed for {recipient_identifier}.")
             return False
 
+    async def get_customer_dashboard_summary(self, db: Session, profile: models.DigitalUserProfile) -> schemas.CustomerDashboardSummaryResponse:
+        """
+        Aggregates data from various services to build the customer dashboard summary.
+        This is a conceptual implementation showing data fetching points.
+        Actual implementation would involve calls to other modules' services.
+        """
+        welcome_name = "User" # Default
+
+        # --- Conceptual Fetch: Customer's First Name ---
+        # This would typically involve:
+        # 1. Importing the Customer model from customer_identity_management.models
+        # 2. Querying the Customer table: customer_obj = db.query(CIMCustomer).filter(CIMCustomer.id == profile.customer_id).first()
+        # 3. Setting welcome_name: if customer_obj: welcome_name = customer_obj.first_name or profile.username
+        # For mock purposes:
+        if "@" not in profile.username and "." in profile.username: # e.g. john.doe
+            welcome_name = profile.username.split('.')[0].capitalize()
+        elif profile.username:
+             welcome_name = profile.username
+        else:
+            welcome_name = "Valued Customer"
+
+
+        # --- Conceptual Fetch: Accounts Summary ---
+        dashboard_accounts: List[schemas.DashboardAccountSummarySchema] = []
+        # In a real app:
+        # from weezy_cbs.accounts_ledger_management.services import account_service as alm_account_service
+        # customer_accounts, _ = alm_account_service.get_accounts_for_customer(db, customer_id=profile.customer_id, limit=3, active_only=True)
+        # for acc_model in customer_accounts:
+        #     dashboard_accounts.append(schemas.DashboardAccountSummarySchema(
+        #         account_id=acc_model.id,
+        #         account_number_masked=f"******{acc_model.account_number[-4:]}",
+        #         account_type=str(acc_model.account_type.value),
+        #         available_balance=float(acc_model.available_balance), # Ensure Decimal to float conversion
+        #         currency=str(acc_model.currency.value),
+        #         # account_nickname=acc_model.nickname # If nickname field exists
+        #     ))
+        # Mock accounts if conceptual fetch is not implemented:
+        if not dashboard_accounts:
+            dashboard_accounts = [
+                schemas.DashboardAccountSummarySchema(account_id=random.randint(1000,2000), account_number_masked="******1234", account_type="SAVINGS", available_balance=random.uniform(5000, 50000), currency="NGN"),
+                schemas.DashboardAccountSummarySchema(account_id=random.randint(2001,3000), account_number_masked="******5678", account_type="CURRENT", available_balance=random.uniform(10000, 200000), currency="NGN"),
+            ]
+
+        # --- Conceptual Fetch: Recent Transactions ---
+        dashboard_transactions: List[schemas.DashboardTransactionSummarySchema] = []
+        # if dashboard_accounts: # Assuming we fetch for the first listed account or a primary one
+        #     from weezy_cbs.transaction_management.services import transaction_service as tm_transaction_service
+        #     # This service method would need to exist:
+        #     recent_txns_models, _ = tm_transaction_service.get_transactions_for_account(db, account_id=dashboard_accounts[0].account_id, limit=5)
+        #     for txn_model in recent_txns_models:
+        #         txn_type_display = "DEBIT" # Determine based on which account (debit/credit) is the dashboard owner's
+        #         # if str(txn_model.debit_account_number) == dashboard_accounts[0].account_number_masked.replace("*", ""): # Simplified check
+        #         #     txn_type_display = "DEBIT"
+        #         # elif str(txn_model.credit_account_number) == dashboard_accounts[0].account_number_masked.replace("*", ""):
+        #         #     txn_type_display = "CREDIT"
+        #         dashboard_transactions.append(schemas.DashboardTransactionSummarySchema(
+        #             id=str(txn_model.id),
+        #             date=txn_model.initiated_at, # Or processed_at
+        #             description=txn_model.narration,
+        #             amount=float(txn_model.amount),
+        #             currency=str(txn_model.currency.value),
+        #             transaction_type=txn_type_display,
+        #             status=str(txn_model.status.value)
+        #         ))
+        # Mock transactions:
+        if not dashboard_transactions:
+             dashboard_transactions = [
+                schemas.DashboardTransactionSummarySchema(id=f"txn_{random.randint(100,200)}", date=datetime.utcnow() - timedelta(days=random.randint(1,3)), description="Data Purchase MTN", amount=float(random.randint(-5000, -500)), currency="NGN", transaction_type="DEBIT", status="SUCCESSFUL"),
+                schemas.DashboardTransactionSummarySchema(id=f"txn_{random.randint(201,300)}", date=datetime.utcnow() - timedelta(hours=random.randint(1,10)), description="Transfer from J. Ahmed", amount=float(random.randint(10000, 50000)), currency="NGN", transaction_type="CREDIT", status="SUCCESSFUL"),
+            ]
+
+        # --- Conceptual Fetch: Active Loans Summary ---
+        dashboard_loans: List[schemas.DashboardLoanSummarySchema] = []
+        # from weezy_cbs.loan_management_module.services import loan_account_service as lms_loan_account_service
+        # active_loan_models, _ = lms_loan_account_service.get_loan_accounts_by_customer(db, customer_id=profile.customer_id, status="ACTIVE", limit=2)
+        # for loan_model in active_loan_models:
+        #     product_name = "Loan" # Default
+        #     # To get product_name, you'd need to join through LoanApplication to LoanProduct
+        #     # if loan_model.application and loan_model.application.loan_product:
+        #     #     product_name = loan_model.application.loan_product.name
+        #
+        #     # To get next_repayment_amount, you'd query LoanRepaymentSchedule
+        #     # next_schedule = db.query(LoanRepaymentSchedule).filter(LoanRepaymentSchedule.loan_account_id == loan_model.id, LoanRepaymentSchedule.due_date >= datetime.utcnow().date(), LoanRepaymentSchedule.is_paid == False).order_by(LoanRepaymentSchedule.due_date).first()
+        #     # next_repayment_amt = float(next_schedule.total_due) if next_schedule else None
+        #     dashboard_loans.append(schemas.DashboardLoanSummarySchema(
+        #         loan_account_id=loan_model.id,
+        #         loan_product_name=product_name, # Needs to be fetched via relationships
+        #         outstanding_principal=float(loan_model.principal_outstanding),
+        #         outstanding_interest=float(loan_model.interest_outstanding),
+        #         total_outstanding=float(loan_model.principal_outstanding + loan_model.interest_outstanding + loan_model.fees_outstanding + loan_model.penalties_outstanding),
+        #         currency=str(loan_model.currency.value),
+        #         next_repayment_date=loan_model.next_repayment_date,
+        #         # next_repayment_amount=next_repayment_amt
+        #     ))
+        # Mock loans:
+        if not dashboard_loans and random.choice([True, False]): # Randomly add a mock loan
+            dashboard_loans.append(
+                schemas.DashboardLoanSummarySchema(loan_account_id=random.randint(100,200), loan_product_name="Quick Personal Loan",
+                                                 outstanding_principal=random.uniform(20000, 100000),
+                                                 outstanding_interest=random.uniform(500,5000),
+                                                 total_outstanding=random.uniform(20500, 105000),
+                                                 currency="NGN",
+                                                 next_repayment_date=(datetime.utcnow() + timedelta(days=random.randint(5,25))).date(),
+                                                 next_repayment_amount=random.uniform(5000,15000))
+            )
+
+        # --- Conceptual Fetch: Unread Notification Count ---
+        # This query would be on the NotificationLog model in this (digital_channels) module.
+        unread_notifications = db.query(models.NotificationLog).filter(
+            models.NotificationLog.digital_user_profile_id == profile.id,
+            # Assuming 'status' field exists and 'READ' is a status. Or use an 'is_read' boolean.
+            # For this example, let's assume status "SENT" means unread by user.
+            models.NotificationLog.status == "SENT"
+        ).count()
+        # Mock if conceptual query is not run or returns 0 for demo purposes
+        if unread_notifications == 0 and random.choice([True, False, False]):
+            unread_notifications = random.randint(1,5)
+
+        return schemas.CustomerDashboardSummaryResponse(
+            welcome_name=welcome_name,
+            last_login_at=profile.last_login_at,
+            accounts=dashboard_accounts,
+            recent_transactions=dashboard_transactions,
+            active_loans=dashboard_loans,
+            unread_notification_count=unread_notifications
+        )
+
 
 # --- RegisteredDevice Service ---
 class RegisteredDeviceService(BaseDigitalChannelService):

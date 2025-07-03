@@ -238,6 +238,18 @@ async def verify_otp(
 
     return {"message": f"OTP verified successfully for {otp_verify.otp_purpose}."}
 
+@profiles_router.get("/me/dashboard-summary", response_model=schemas.CustomerDashboardSummaryResponse)
+async def get_customer_dashboard_summary_endpoint(
+    db: Session = Depends(get_db),
+    current_profile: models.DigitalUserProfile = Depends(get_current_digital_user_profile)
+):
+    """
+    Retrieve an aggregated summary of the customer's financial overview for a dashboard.
+    """
+    summary = await digital_user_profile_service.get_customer_dashboard_summary(db, profile=current_profile)
+    if summary is None: # Should not happen if profile exists, but good check
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not generate dashboard summary.")
+    return summary
 
 # --- RegisteredDevice Endpoints (nested under /me for context) ---
 devices_router = APIRouter(
