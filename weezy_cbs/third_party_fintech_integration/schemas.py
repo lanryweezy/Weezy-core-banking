@@ -1,149 +1,170 @@
-# Pydantic schemas for Third-Party & Fintech Integration Module
-from pydantic import BaseModel, Field, HttpUrl
-from typing import Optional, List, Dict, Any
-from datetime import datetime, date
-import decimal
+from pydantic import BaseModel, Field, validator, HttpUrl, Json
+from typing import List, Optional, Dict, Any, Union
+from datetime import datetime
+import json
 
-from .models import ThirdPartyServiceEnum, TPAPILogDirectionEnum, TPAPILogStatusEnum # Import enums
+from .models import APIServiceAuthMethodEnum, WebhookProcessingStatusEnum
 
-# --- ThirdPartyAPILog Schemas (Internal) ---
-class ThirdPartyAPILogBase(BaseModel):
-    service_name: ThirdPartyServiceEnum
-    endpoint_url: str
-    http_method: str
-    direction: TPAPILogDirectionEnum
-    request_payload: Optional[Any] = None # Parsed JSON/XML or raw string
-    response_status_code: Optional[int] = None
-    response_payload: Optional[Any] = None
-    status: TPAPILogStatusEnum
-    error_message: Optional[str] = None
-    duration_ms: Optional[int] = None
-    # internal_request_reference: Optional[str] = None
-    external_call_reference: Optional[str] = None
-
-class ThirdPartyAPILogResponse(ThirdPartyAPILogBase):
-    id: int
-    request_headers: Optional[Dict[str, str]] = None # Assuming stored as JSON string, parsed here
-    response_headers: Optional[Dict[str, str]] = None
-    timestamp: datetime
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-
-# --- ThirdPartyConfig Schemas (Admin/Setup) ---
-class ThirdPartyConfigBase(BaseModel):
-    service_name: ThirdPartyServiceEnum
-    api_base_url: HttpUrl
-    # additional_config_json: Optional[Dict[str, Any]] = None
+# --- APIServiceConfig Schemas ---
+class APIServiceConfigBase(BaseModel):
+    service_name: str = Field(..., max_length=100, description="Unique identifier for the service, e.g., CRC_CREDIT_BUREAU")
+    description: Optional[str] = None
+    base_url: HttpUrl
+    authentication_method: APIServiceAuthMethodEnum
+    # credentials_config_json: This will be handled carefully.
+    # For create/update, accept a dict. For response, it should be masked or omitted.
+    additional_headers_json: Optional[Dict[str, str]] = Field(None, description='e.g., {"X-Custom-Header": "value"}')
+    timeout_seconds: int = Field(30, ge=5, le=300) # 5 to 300 seconds
+    retry_policy_json: Optional[Dict[str, Any]] = Field(None, description='e.g., {"max_retries": 3, "backoff_factor": 0.5}')
     is_active: bool = True
 
-class ThirdPartyConfigCreateRequest(ThirdPartyConfigBase):
-    # Plain text credentials provided during creation, encrypted by service layer
-    # username_plain: Optional[str] = None
-    # password_plain: Optional[str] = None
-    # api_key_plain: Optional[str] = None
-    pass # Assume credentials managed via vault or secure env vars, not direct API for now
+    @validator('additional_headers_json', 'retry_policy_json', pre=True)
+    def parse_json_string_if_needed(cls, value):
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                raise ValueError("Invalid JSON string for JSON field")
+        return value
 
-class ThirdPartyConfigResponse(ThirdPartyConfigBase):
+class APIServiceConfigCreate(APIServiceConfigBase):
+    # For create, accept credentials as a dictionary. Service layer will handle encryption/storage.
+    credentials_config_json: Optional[Dict[str, Any]] = Field(None, description="Credentials specific to auth_method, e.g. API keys, client_id/secret. Will be encrypted by service.")
+    # Example for API_KEY_HEADER: {"header_name": "X-Api-Key", "api_key": "actual_key_value"}
+    # Example for OAUTH2: {"token_url": "...", "client_id": "...", "client_secret": "...", "scopes": "read write"}
+
+class APIServiceConfigUpdate(BaseModel): # Partial updates
+    description: Optional[str] = None
+    base_url: Optional[HttpUrl] = None
+    authentication_method: Optional[APIServiceAuthMethodEnum] = None
+    credentials_config_json: Optional[Dict[str, Any]] = Field(None, description="Provide new credentials to update. Service handles encryption.")
+    additional_headers_json: Optional[Dict[str, str]] = None
+    timeout_seconds: Optional[int] = Field(None, ge=5, le=300)
+    retry_policy_json: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+    @validator('additional_headers_json', 'retry_policy_json', 'credentials_config_json', pre=True)
+    def parse_update_json_string_if_needed(cls, value): # Duplicate for update
+        if value is None: return None
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                raise ValueError("Invalid JSON string for JSON field")
+        return value
+
+class APIServiceConfigResponse(APIServiceConfigBase):
     id: int
-    # Indicate if credentials are set, not the credentials themselves
-    # has_credentials_configured: bool
-    last_updated: Optional[datetime] = None
+    # IMPORTANT: credentials_config_json should NOT be returned directly if it contains secrets.
+    # Instead, return masked version or status indicators.
+    # For simplicity in this phase, we might return it, but flag for masking.
+    credentials_config_json: Optional[Dict[str, Any]] = Field(None, description="MASKED/OMITTED in real production responses for security")
+    last_health_check_at: Optional[datetime] = None
+    last_health_check_status: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    # created_by_user_id: Optional[int] = None
 
     class Config:
         orm_mode = True
         use_enum_values = True
 
 
-# --- Credit Bureau Schemas ---
-class CreditReportRequestSchema(BaseModel): # Input to our service to request a report
-    bvn: str = Field(..., min_length=11, max_length=11, pattern=r"^\d{11}$")
-    # customer_id: int # Our internal customer ID
-    # loan_application_id: Optional[int] = None # If request is for a specific loan app
-    bureau_to_use: ThirdPartyServiceEnum # CREDIT_BUREAU_CRC or CREDIT_BUREAU_FIRSTCENTRAL
-    # reason_for_query: str = "LOAN_APPLICATION" # As required by bureaus
+# --- ExternalServiceLog Schemas ---
+class ExternalServiceLogResponse(BaseModel):
+    id: int
+    api_service_config_id: Optional[int] = None
+    service_name_called: str
+    request_timestamp: datetime
+    response_timestamp: Optional[datetime] = None
+    http_method: str
+    endpoint_url_called: str
+    # Payloads should be masked/summarized if sensitive, or only available to specific roles
+    request_headers_json: Optional[Dict[str, Any]] = Field(None, description="Potentially MASKED/SUMMARIZED")
+    request_payload_json: Optional[Any] = Field(None, description="Potentially MASKED/SUMMARIZED") # Could be dict or string
+    response_headers_json: Optional[Dict[str, Any]] = Field(None, description="Potentially MASKED/SUMMARIZED")
+    response_payload_json: Optional[Any] = Field(None, description="Potentially MASKED/SUMMARIZED")
+    status_code_received: Optional[int] = None
+    is_success: Optional[bool] = None
+    error_message: Optional[str] = None
+    duration_ms: Optional[int] = None
+    correlation_id: Optional[str] = None
+    # financial_transaction_id: Optional[int] = None
 
-class CreditReportResponseSchema(BaseModel): # Output from our service after getting report
-    # our_internal_report_id: int # ID from CreditBureauReport model
-    bvn_queried: str
-    bureau_name: ThirdPartyServiceEnum
-    report_reference_external: str # Report ID from bureau
-    report_date: datetime
-    credit_score: Optional[int] = None
-    # summary_data: Optional[Dict[str, Any]] = None # Key data points
-    # full_report_link_or_data: Optional[Any] = None # Link to PDF/XML or embedded data (if small)
-    status: str # e.g. "SUCCESS", "FAILED_AT_BUREAU", "NO_HIT"
+    @validator('request_headers_json', 'request_payload_json', 'response_headers_json', 'response_payload_json', pre=True)
+    def parse_log_json_fields(cls, value):
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError: # If not valid JSON, return as string (might be non-JSON payload)
+                return value
+        return value
 
     class Config:
-        orm_mode = True # If mapping from CreditBureauReport model for some fields
+        orm_mode = True
+
+# --- WebhookEventLog Schemas ---
+class WebhookEventLogResponse(BaseModel):
+    id: int
+    api_service_config_id: Optional[int] = None # If webhook source is a configured service
+    source_service_name: str
+    event_type: Optional[str] = None
+    received_at: datetime
+    source_ip_address: Optional[str] = None
+    request_headers_json: Optional[Dict[str, Any]] = None # Parsed from Text
+    # raw_payload: str # Keep as string to show exactly what was received
+    raw_payload_parsed: Optional[Any] = Field(None, description="Attempted JSON parsing of raw_payload")
+
+    processing_status: WebhookProcessingStatusEnum
+    processing_notes_or_error: Optional[str] = None
+    processed_at: Optional[datetime] = None
+    is_signature_verified: Optional[bool] = None
+    related_internal_reference_id: Optional[str] = None
+    # financial_transaction_id: Optional[int] = None
+
+    @validator('request_headers_json', pre=True)
+    def parse_webhook_headers_json(cls, value):
+        if isinstance(value, str):
+            try: return json.loads(value)
+            except json.JSONDecodeError: return {"error": "Invalid JSON in headers"}
+        return value
+
+    # A separate field for parsed payload, original `raw_payload` remains string
+    # This can be populated by a @root_validator or in the service layer.
+    # For simplicity, we assume service might add it if payload is JSON.
+
+    class Config:
+        orm_mode = True
         use_enum_values = True
 
-# --- NIMC NIN Verification Schemas (if distinct from NIBSS) ---
-class NIMCNINVerificationRequest(BaseModel):
-    nin: str = Field(..., min_length=11, max_length=11, pattern=r"^\d{11}$")
-    # Potentially other fields like DOB for matching if required by NIMC API
+class WebhookProcessingUpdateRequest(BaseModel): # For admin to manually update status
+    processing_status: WebhookProcessingStatusEnum
+    processing_notes_or_error: Optional[str] = None
 
-class NIMCNINVerificationResponse(BaseModel):
-    is_valid: bool
-    message: str
-    # Matched NIN details from NIMC:
-    # first_name: Optional[str] = None
-    # last_name: Optional[str] = None
-    # date_of_birth: Optional[date] = None
-    # photo_base64: Optional[str] = None # If NIMC returns photo
-    # other_demographic_data: Optional[Dict[str, Any]] = None
 
-# --- External Loan Application Schemas (for incoming loan apps from partners) ---
-class ExternalLoanApplicationPayload(BaseModel): # Payload received from originator
-    originator_reference_id: str
-    # Customer details:
-    customer_bvn: str
-    customer_first_name: str
-    customer_last_name: str
-    customer_phone: str
-    customer_email: Optional[EmailStr] = None
-    # Loan details:
-    requested_amount: decimal.Decimal
-    requested_tenor_months: int
-    loan_purpose: Optional[str] = None
-    # Other data from originator...
-    additional_data: Optional[Dict[str, Any]] = None
+# --- Generic Webhook Schemas (Conceptual) ---
+class GenericWebhookPayload(BaseModel): # Can be used with Request.body() and manual parsing
+    # Actual structure is unknown and varies by provider
+    # This is a placeholder if you want to type hint a very generic incoming dict
+    event: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+    # Add other common top-level fields if any pattern exists across webhooks
 
-class ExternalLoanApplicationReceiveRequest(BaseModel):
-    originator_name: ThirdPartyServiceEnum # e.g. EXTERNAL_LOAN_ORIGINATOR_Y
-    application_payload: ExternalLoanApplicationPayload
+# --- Paginated Responses ---
+class PaginatedAPIServiceConfigResponse(BaseModel):
+    items: List[APIServiceConfigResponse]
+    total: int
+    page: int
+    size: int
 
-class ExternalLoanApplicationReceiveResponse(BaseModel):
-    # our_internal_tracking_id: int # ID from ExternalLoanApplication model
-    originator_reference_id: str
-    status: str # e.g. "RECEIVED_PENDING_REVIEW", "VALIDATION_FAILED"
-    message: Optional[str] = None
+class PaginatedExternalServiceLogResponse(BaseModel):
+    items: List[ExternalServiceLogResponse]
+    total: int
+    page: int
+    size: int
 
-# --- BaaS Partner API Call Schemas (Conceptual, if we expose APIs to partners) ---
-# These would be defined by the services we expose via BaaS.
-# Example: BaaS Partner wants to create a virtual account for their end-user.
-class BaaSVirtualAccountCreationRequest(BaseModel):
-    partner_client_id: str # Authenticated BaaS partner
-    end_user_identifier: str # Partner's ID for their customer
-    # Required KYC details for the virtual account (as per CBN tiering for BaaS)
-    # first_name: str
-    # last_name: str
-    # bvn: Optional[str] = None # Depending on tier
-    # ...
-
-class BaaSVirtualAccountCreationResponse(BaseModel):
-    virtual_account_number: str
-    # account_tier: str
-    # status: str
-    # ...
-
-# Schemas for Bill Payment Aggregators would be similar to those in PaymentsIntegrationLayer
-# if this module handles specific aggregator logic beyond generic payment processing.
-
-# This module's schemas are often wrappers around what the third-party expects or provides,
-# plus our internal tracking/status fields.
-# They facilitate communication between our core CBS and external systems.
-
-# Import decimal for fields that might handle it
-import decimal
+class PaginatedWebhookEventLogResponse(BaseModel):
+    items: List[WebhookEventLogResponse]
+    total: int
+    page: int
+    size: int

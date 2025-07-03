@@ -2,10 +2,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum as SQLAlchemyEnum, Date, Text, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-# IMPORTANT: In a real multi-module setup, Base should be imported from a shared weezy_cbs.database module
-# For now, using a local Base for isolated development.
-from sqlalchemy.ext.declarative import declarative_base
-Base = declarative_base()
+from weezy_cbs.database import Base # Use the shared Base
 
 import enum
 

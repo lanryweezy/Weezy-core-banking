@@ -1,174 +1,172 @@
 # Pydantic schemas for Deposit & Collection Module
-from pydantic import BaseModel, Field, validator
-from typing import Optional, List
+from pydantic import BaseModel, Field, validator, EmailStr, HttpUrl # Added EmailStr, HttpUrl
+from typing import Optional, List, Dict, Any # Added Dict, Any
 from datetime import datetime, date
 import decimal
+import enum # For Pydantic enums
 
-from .models import DepositTypeEnum, DepositStatusEnum, CurrencyEnum # Import enums
+# Import enums from models to ensure consistency
+from .models import (
+    DepositTypeEnum as ModelDepositTypeEnum,
+    DepositStatusEnum as ModelDepositStatusEnum,
+    CurrencyEnum as ModelCurrencyEnum
+)
+
+# Schema Enums
+class CurrencySchema(str, enum.Enum): # Replicated for independence
+    NGN = "NGN"; USD = "USD"
+
+class DepositTypeSchema(str, enum.Enum):
+    CASH = "CASH"; CHEQUE = "CHEQUE"; AGENT_DEPOSIT = "AGENT_DEPOSIT"
+    POS_DEPOSIT = "POS_DEPOSIT"; DIRECT_DEBIT_COLLECTION = "DIRECT_DEBIT_COLLECTION"
+
+class DepositStatusSchema(str, enum.Enum):
+    PENDING_VERIFICATION = "PENDING_VERIFICATION"; PENDING_CLEARANCE = "PENDING_CLEARANCE"
+    COMPLETED = "COMPLETED"; FAILED = "FAILED"; CANCELLED = "CANCELLED"
 
 # --- Cash Deposit Schemas ---
 class CashDepositBase(BaseModel):
-    account_number: str = Field(..., min_length=10, max_length=10, pattern=r"^\d{10}$")
+    account_number: str = Field(..., min_length=10, max_length=20) # Increased length
     amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
-    currency: CurrencyEnum = CurrencyEnum.NGN
-    depositor_name: Optional[str] = Field(None, min_length=2)
-    depositor_phone: Optional[str] = Field(None, pattern=r"^\+?\d{10,15}$") # Basic phone validation
+    currency: CurrencySchema = CurrencySchema.NGN
+    depositor_name: Optional[str] = Field(None, min_length=2, max_length=150)
+    depositor_phone: Optional[str] = Field(None, pattern=r"^\+?\d{10,15}$")
     notes: Optional[str] = None
 
 class CashDepositCreateRequest(CashDepositBase):
-    # teller_id: str # Usually from authenticated teller/agent context
-    # branch_code: str # Usually from teller/agent context
-    agent_id_external: Optional[str] = None # For SANEF agent deposits
-    agent_terminal_id: Optional[str] = None
+    account_id: int # Added, as it's a FK in model
+    # teller_id, branch_code usually from authenticated context
+    agent_id_external: Optional[str] = Field(None, max_length=50)
+    agent_terminal_id: Optional[str] = Field(None, max_length=30)
 
 class CashDepositResponse(CashDepositBase):
     id: int
-    # financial_transaction_id: Optional[str] = None
-    teller_id: Optional[str] = None
-    branch_code: Optional[str] = None
-    status: DepositStatusEnum
+    financial_transaction_id: str = Field(..., max_length=40)
+    account_id: int
+    teller_id: Optional[str] = Field(None, max_length=50)
+    branch_code: Optional[str] = Field(None, max_length=10)
+    status: DepositStatusSchema
     deposit_date: datetime
-    agent_id_external: Optional[str] = None
-    agent_terminal_id: Optional[str] = None
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
+    agent_id_external: Optional[str] = Field(None, max_length=50)
+    agent_terminal_id: Optional[str] = Field(None, max_length=30)
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- Cheque Deposit Schemas ---
 class ChequeDepositBase(BaseModel):
-    account_number: str = Field(..., min_length=10, max_length=10, pattern=r"^\d{10}$") # Beneficiary account
-    cheque_number: str = Field(..., min_length=6) # Basic length validation
-    drawee_bank_code: str = Field(..., description="CBN Bank code of the cheque's bank")
-    drawee_account_number: Optional[str] = None
-    drawer_name: Optional[str] = None
+    account_number: str = Field(..., min_length=10, max_length=20)
+    cheque_number: str = Field(..., min_length=6, max_length=20)
+    drawee_bank_code: str = Field(..., max_length=10, description="CBN Bank code of the cheque's bank")
+    drawee_account_number: Optional[str] = Field(None, max_length=20)
+    drawer_name: Optional[str] = Field(None, max_length=150)
     amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
-    currency: CurrencyEnum = CurrencyEnum.NGN # Usually NGN for local cheques
-    depositor_name: Optional[str] = None
-    # cheque_image_front_url: Optional[HttpUrl] = None # If client uploads image and sends URL
+    currency: CurrencySchema = CurrencySchema.NGN
+    depositor_name: Optional[str] = Field(None, max_length=150)
+    # cheque_image_front_url: Optional[HttpUrl] = None
     # cheque_image_back_url: Optional[HttpUrl] = None
 
 class ChequeDepositCreateRequest(ChequeDepositBase):
-    # teller_id: str
-    # branch_code: str
+    account_id: int # Added
     pass
 
 class ChequeDepositResponse(ChequeDepositBase):
     id: int
-    # financial_transaction_id: Optional[str] = None
-    teller_id: Optional[str] = None
-    branch_code: Optional[str] = None
-    status: DepositStatusEnum
-    deposit_date: datetime
-    clearing_date_expected: Optional[datetime] = None
-    cleared_date_actual: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
+    financial_transaction_id: Optional[str] = Field(None, max_length=40)
+    account_id: int
+    teller_id: Optional[str] = Field(None, max_length=50)
+    branch_code: Optional[str] = Field(None, max_length=10)
+    status: DepositStatusSchema
+    deposit_date: date # Changed from datetime
+    clearing_date_expected: Optional[date] = None # Changed
+    cleared_date_actual: Optional[date] = None # Changed
+    reason_for_failure: Optional[str] = Field(None, max_length=255)
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 class ChequeStatusUpdateRequest(BaseModel):
-    new_status: DepositStatusEnum # e.g. COMPLETED, FAILED
-    reason_for_failure: Optional[str] = None # If status is FAILED
-    actual_cleared_date: Optional[datetime] = None # If status is COMPLETED
+    new_status: DepositStatusSchema
+    reason_for_failure: Optional[str] = Field(None, max_length=255)
+    actual_cleared_date: Optional[date] = None # Changed
 
 # --- Collection Service Schemas (Admin/Setup) ---
 class CollectionServiceBase(BaseModel):
-    service_name: str = Field(..., min_length=3)
-    merchant_id_external: str = Field(..., description="Merchant's unique ID with the bank")
-    # merchant_account_id: int # Bank account ID where funds are settled
+    service_name: str = Field(..., min_length=3, max_length=100)
+    merchant_id_external: str = Field(..., max_length=50, description="Merchant's unique ID with the bank")
+    merchant_account_id: int
+    fee_config_code: Optional[str] = None # Link to FeeConfig by code
     is_active: bool = True
-    # validation_endpoint: Optional[HttpUrl] = None
-    # fee_config_id: Optional[int] = None
 
 class CollectionServiceCreateRequest(CollectionServiceBase):
     pass
 
 class CollectionServiceResponse(CollectionServiceBase):
     id: int
-    class Config:
-        orm_mode = True
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    class Config: orm_mode = True
 
 # --- Collection Payment Schemas ---
 class CollectionPaymentBase(BaseModel):
-    # collection_service_id: int # Usually from path parameter
-    payer_name: Optional[str] = None
-    payer_phone: Optional[str] = None
-    payer_email: Optional[str] = None # Pydantic EmailStr for validation
-    customer_identifier_at_merchant: str = Field(..., description="e.g., Student ID, Meter No")
+    payer_name: Optional[str] = Field(None, max_length=150)
+    payer_phone: Optional[str] = Field(None, max_length=15)
+    payer_email: Optional[EmailStr] = None
+    customer_identifier_at_merchant: str = Field(..., max_length=100, description="e.g., Student ID, Meter No")
     amount_paid: decimal.Decimal = Field(..., gt=0, decimal_places=2)
-    currency: CurrencyEnum = CurrencyEnum.NGN
-    payment_channel: Optional[str] = None # e.g. "BRANCH_TELLER", "AGENT_PORTAL"
-    payment_reference_external: Optional[str] = None # Ref from payment channel/gateway
+    currency: CurrencySchema = CurrencySchema.NGN
+    payment_channel: Optional[str] = Field(None, max_length=30)
+    payment_reference_external: Optional[str] = Field(None, max_length=100, description="Ref from payment channel/gateway, should be unique if provided")
 
 class CollectionPaymentCreateRequest(CollectionPaymentBase):
-    pass
+    collection_service_id: int # Usually from path parameter in API, but good for service layer
+    financial_transaction_id: str # Must be created first by TransactionManagement
 
 class CollectionPaymentResponse(CollectionPaymentBase):
     id: int
-    # financial_transaction_id: Optional[str] = None
     collection_service_id: int
-    status: str # PENDING, SUCCESSFUL, FAILED
+    financial_transaction_id: str = Field(..., max_length=40)
+    status: str = Field(..., max_length=20)
     payment_date: datetime
-    # is_settled_to_merchant: bool
-    # settlement_date: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
+    is_settled_to_merchant: bool
+    settlement_batch_id: Optional[str] = Field(None, max_length=50)
+    settlement_date: Optional[datetime] = None
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- POS Reconciliation Schemas (Internal/Admin) ---
-class POSReconciliationBatchCreate(BaseModel):
-    batch_date: date # The date for which reconciliation is being done
-    source_file_name: Optional[str] = None # Name of uploaded file from acquirer
-    # File content itself would be handled via file upload mechanism
+class POSReconciliationBatchCreateRequest(BaseModel): # Renamed
+    batch_date: date
+    source_file_name: Optional[str] = Field(None, max_length=255)
 
 class POSReconciliationBatchResponse(BaseModel):
     id: int
-    batch_date: datetime # Changed to datetime to match model
+    batch_date: date # Changed from datetime
     source_file_name: Optional[str] = None
-    status: str
+    status: str = Field(..., max_length=30)
     total_transactions_in_file: Optional[int] = None
-    total_amount_in_file: Optional[decimal.Decimal] = None
+    total_amount_in_file: Optional[decimal.Decimal] = Field(None, decimal_places=2)
     matched_transactions_count: int
     unmatched_transactions_count: int
-    discrepancy_amount: decimal.Decimal
+    discrepancy_amount: decimal.Decimal = Field(..., decimal_places=2)
     processed_at: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
-        json_encoders = { decimal.Decimal: str }
+    class Config: orm_mode = True; json_encoders = {decimal.Decimal: str}
 
 class POSReconciliationDiscrepancyResponse(BaseModel):
     id: int
     batch_id: int
-    # financial_transaction_id: Optional[str] = None
-    external_transaction_reference: Optional[str] = None
-    discrepancy_type: str
+    financial_transaction_id: Optional[str] = Field(None, max_length=40)
+    external_transaction_reference: Optional[str] = Field(None, max_length=50)
+    discrepancy_type: str = Field(..., max_length=30)
     details: Optional[str] = None
-    status: str
+    status: str = Field(..., max_length=20)
     resolved_at: Optional[datetime] = None
+    class Config: orm_mode = True
 
-    class Config:
-        orm_mode = True
-
+# --- Paginated Responses ---
 class PaginatedCashDepositResponse(BaseModel):
-    items: List[CashDepositResponse]
-    total: int
-    page: int
-    size: int
+    items: List[CashDepositResponse]; total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str} # If amounts are decimal
 
 class PaginatedChequeDepositResponse(BaseModel):
-    items: List[ChequeDepositResponse]
-    total: int
-    page: int
-    size: int
+    items: List[ChequeDepositResponse]; total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str}
 
 class PaginatedCollectionPaymentResponse(BaseModel):
-    items: List[CollectionPaymentResponse]
-    total: int
-    page: int
-    size: int
+    items: List[CollectionPaymentResponse]; total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str}

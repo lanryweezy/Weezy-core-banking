@@ -1,250 +1,450 @@
-# Service layer for Reports & Analytics Module
-from sqlalchemy.orm import Session
-from sqlalchemy import text # For executing raw SQL if needed (with caution)
-from . import models, schemas
 import json
-import csv
-import io
-from datetime import datetime, date
-import decimal # For handling decimal data from DB
+from typing import List, Optional, Type, Dict, Any, Tuple, Union
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import text # For executing raw SQL safely
+from fastapi import HTTPException, status
+from datetime import datetime, timedelta
+# import pandas as pd # Optional: For data manipulation and CSV/Excel export if used
+import csv # For CSV generation
+import io # For CSV generation
 
-# Placeholder for other service integrations & data sources
-# from weezy_cbs.customer_identity_management.services import get_customer_data_for_report_xyz
-# from weezy_cbs.transaction_management.services import get_transaction_summary_for_period
-# from weezy_cbs.shared import exceptions, file_storage_service, query_builder_utility (for safe query building)
+from . import models, schemas
+from weezy_cbs.core_infrastructure_config_engine.services import AuditLogService
+# Conceptual: For mapping model names to actual SQLAlchemy models for dynamic queries
+# from weezy_cbs import models as all_models # This would require a central models.__init__
 
-class ReportExecutionError(Exception): pass
-class QueryBuildingError(Exception): pass
-class NotFoundException(Exception): pass # If a report def or saved query not found
-
-# --- ReportDefinition Services (Admin/Setup) ---
-def create_report_definition(db: Session, report_def_in: schemas.ReportDefinitionCreateRequest) -> models.ReportDefinition:
-    existing = db.query(models.ReportDefinition).filter(models.ReportDefinition.report_code == report_def_in.report_code).first()
-    if existing:
-        raise ValueError(f"Report definition with code {report_def_in.report_code} already exists.")
-
-    db_report_def = models.ReportDefinition(
-        **report_def_in.dict()
-        # source_data_description_json=json.dumps(report_def_in.source_data_description_json) if report_def_in.source_data_description_json else None,
-        # parameters_schema_json=json.dumps(report_def_in.parameters_schema_json) if report_def_in.parameters_schema_json else None,
-    )
-    db.add(db_report_def)
-    db.commit()
-    db.refresh(db_report_def)
-    return db_report_def
-
-def get_report_definition(db: Session, report_code: str) -> Optional[models.ReportDefinition]:
-    return db.query(models.ReportDefinition).filter(models.ReportDefinition.report_code == report_code).first()
-
-# --- SavedQuery Services (User-specific) ---
-def save_user_query(db: Session, query_in: schemas.SavedQueryCreateRequest, user_id: int) -> models.SavedQuery:
-    db_saved_query = models.SavedQuery(
-        user_id=user_id,
-        query_name=query_in.query_name,
-        description=query_in.description,
-        query_language=query_in.query_language,
-        query_text_or_params_json=json.dumps(query_in.query_text_or_params_json) # Store as JSON string
-    )
-    db.add(db_saved_query)
-    db.commit()
-    db.refresh(db_saved_query)
-    return db_saved_query
-
-# --- Report Execution Services ---
-def _fetch_data_for_report(db: Session, report_code: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Conceptual function to fetch data based on report_code and parameters.
-    This would involve complex logic:
-    - Getting the ReportDefinition.
-    - Using its query_template or query_generator_function_name.
-    - Safely substituting params into template or calling generator.
-    - Executing the query against appropriate DBs/services.
-    - Returning data as List[Dict].
-    """
-    # Example: Hardcoded logic for a mock report
-    if report_code == "DAILY_TRANSACTION_SUMMARY":
-        # start_date = params.get("start_date", date.today().isoformat())
-        # end_date = params.get("end_date", date.today().isoformat())
-        # MOCK DATA:
-        return [
-            {"channel": "NIP", "volume": 1500, "value": decimal.Decimal("75000000.00")},
-            {"channel": "POS", "volume": 8000, "value": decimal.Decimal("12000000.00")},
-            {"channel": "ATM", "volume": 3000, "value": decimal.Decimal("9000000.00")},
-        ]
-    elif report_code == "CUSTOMER_ACTIVITY_MONTHLY":
-        # MOCK DATA:
-        return [
-            {"customer_id": 101, "name": "Ada Eze", "login_count": 25, "transaction_count": 15},
-            {"customer_id": 102, "name": "Ben Ola", "login_count": 10, "transaction_count": 5},
-        ]
-    elif report_code == "KPI_TOTAL_ACTIVE_CUSTOMERS": # For a KPI widget
-        # count = db.query(func.count(Customer.id)).filter(Customer.is_active==True).scalar()
-        return [{"kpi_name": "Total Active Customers", "value": random.randint(10000, 15000)}]
-
-    raise ReportExecutionError(f"Data fetching logic for report code '{report_code}' not implemented.")
-
-def _format_report_data(data: List[Dict[str, Any]], output_format: str) -> Any:
-    """Formats data into the desired output string (CSV, JSON str) or object (for direct API response)."""
-    if not data:
-        return "No data available for this report." if output_format != "JSON" else []
-
-    if output_format.upper() == "JSON":
-        # For direct JSON response, ensure Decimals are handled if Pydantic doesn't do it upstream
-        def decimal_default(obj):
-            if isinstance(obj, decimal.Decimal):
-                return str(obj) # Or float(obj) if precision loss is acceptable
-            raise TypeError
-        return json.loads(json.dumps(data, default=decimal_default)) # Return as Python list/dict
-
-    elif output_format.upper() == "CSV":
-        output = io.StringIO()
-        if data:
-            writer = csv.DictWriter(output, fieldnames=data[0].keys())
-            writer.writeheader()
-            writer.writerows(data)
-        return output.getvalue()
-
-    # elif output_format.upper() == "PDF" or output_format.upper() == "XLSX":
-    #     # Requires libraries like reportlab/weasyprint for PDF, openpyxl/xlsxwriter for Excel
-    #     raise NotImplementedError(f"Output format {output_format} requires dedicated library.")
-    else:
-        raise ReportExecutionError(f"Unsupported output format: {output_format}")
+# --- Helper for Cron & Next Run Time (Conceptual) ---
+# In a real app, use a library like 'croniter'
+def calculate_next_run(cron_expression: str, last_run: Optional[datetime] = None) -> Optional[datetime]:
+    # This is a placeholder. Real implementation needs a cron expression parser.
+    # For simplicity, let's assume it just adds a fixed interval for demo.
+    if "0 0 * * *" in cron_expression: # Daily at midnight
+        return (last_run or datetime.utcnow()).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    if "0 * * * *" in cron_expression: # Hourly
+        return (last_run or datetime.utcnow()).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    # Add more cron patterns or use a library
+    return datetime.utcnow() + timedelta(days=1) # Default to next day for unknown
 
 
-def execute_report(db: Session, exec_request: schemas.ReportExecutionRequest, user_id: str) -> schemas.ReportExecutionResult:
-    if not exec_request.report_code: # Ad-hoc query not fully supported in this simplified version
-        raise NotImplementedError("Ad-hoc query execution not fully implemented. Please use a predefined report_code.")
-
-    report_def = get_report_definition(db, exec_request.report_code)
-    if not report_def:
-        raise NotFoundException(f"Report definition for code '{exec_request.report_code}' not found.")
-
-    # Log the instance of report generation
-    instance_log = models.GeneratedReportInstance(
-        report_code_or_name=report_def.report_code,
-        # parameters_used_json=json.dumps(exec_request.parameters),
-        # generated_by_user_id=user_id,
-        output_format=exec_request.output_format.upper(),
-        status="PENDING"
-    )
-    db.add(instance_log)
-    db.commit()
-    db.refresh(instance_log)
-
-    try:
-        instance_log.status = "GENERATING"
-        db.commit() # Commit status before potentially long operation
-
-        report_data_list_of_dicts = _fetch_data_for_report(db, report_def.report_code, exec_request.parameters)
-
-        formatted_output = None
-        file_url_for_log = None
-
-        if exec_request.output_format.upper() == "JSON":
-            formatted_output = _format_report_data(report_data_list_of_dicts, "JSON")
-            # instance_log.data_preview_json = json.dumps(formatted_output[:10]) # Preview first 10 if large
-        else: # CSV, PDF, XLSX would be files
-            file_content_str = _format_report_data(report_data_list_of_dicts, exec_request.output_format.upper())
-            # file_path = file_storage_service.save_generated_report(
-            #     instance_log.id, report_def.report_code, exec_request.output_format, file_content_str
-            # )
-            # file_url_for_log = file_storage_service.get_report_url(file_path) # Conceptual
-            file_url_for_log = f"/generated_reports/{instance_log.id}.{exec_request.output_format.lower()}" # Mock URL
-            # For API response, if not JSON, we'd typically return a link or trigger download.
-            # Here, the `data` field in ReportExecutionResult would be None if file_url is set.
-
-        instance_log.status = "COMPLETED"
-        # instance_log.file_path_or_url = file_url_for_log
-        instance_log.generated_at = datetime.utcnow() # Should be set automatically but good to ensure
-        db.commit()
-        db.refresh(instance_log)
-
-        return schemas.ReportExecutionResult(
-            instance_id=instance_log.id,
-            report_code_or_name=instance_log.report_code_or_name,
-            status=instance_log.status,
-            generated_at=instance_log.generated_at,
-            output_format=instance_log.output_format,
-            data=formatted_output if exec_request.output_format.upper() == "JSON" else None,
-            # file_url=file_url_for_log if exec_request.output_format.upper() != "JSON" else None
+# --- Base Reporting Service ---
+class BaseReportingService:
+    def _audit_log(self, db: Session, action: str, entity_type: str, entity_id: Any, summary: str = "", performing_user: str = "SYSTEM"):
+        AuditLogService.create_audit_log_entry(
+            db, username_performing_action=performing_user, action_type=action,
+            entity_type=entity_type, entity_id=str(entity_id), summary=summary
         )
 
-    except Exception as e:
-        instance_log.status = "FAILED"
-        instance_log.error_message = str(e)
+    def _parse_json_field(self, data: Optional[str]) -> Optional[Any]:
+        if data is None: return None
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            # Log error or handle as appropriate
+            return None # Or raise ValueError
+
+# --- ReportDefinition Service ---
+class ReportDefinitionService(BaseReportingService):
+    def create_definition(self, db: Session, def_in: schemas.ReportDefinitionCreate, user_id: int, username: str) -> models.ReportDefinition:
+        if db.query(models.ReportDefinition).filter(models.ReportDefinition.report_code == def_in.report_code).first():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Report code '{def_in.report_code}' already exists.")
+
+        db_def = models.ReportDefinition(
+            report_code=def_in.report_code,
+            report_name=def_in.report_name,
+            description=def_in.description,
+            source_modules_json=json.dumps(def_in.source_modules_json) if def_in.source_modules_json else None,
+            query_logic_type=def_in.query_logic_type,
+            query_details_json=json.dumps(def_in.query_details_json.dict() if hasattr(def_in.query_details_json, 'dict') else def_in.query_details_json),
+            parameters_schema_json=json.dumps(def_in.parameters_schema_json.dict()) if def_in.parameters_schema_json else None,
+            default_output_formats_json=json.dumps(def_in.default_output_formats_json) if def_in.default_output_formats_json else None,
+            allowed_roles_json=json.dumps(def_in.allowed_roles_json) if def_in.allowed_roles_json else None,
+            is_system_report=def_in.is_system_report,
+            version=def_in.version,
+            created_by_user_id=user_id
+        )
+        db.add(db_def)
         db.commit()
-        db.refresh(instance_log)
-        raise ReportExecutionError(f"Failed to execute report {exec_request.report_code}: {str(e)}")
+        db.refresh(db_def)
+        self._audit_log(db, "REPORT_DEF_CREATE", "ReportDefinition", db_def.id, f"Report definition '{db_def.report_name}' created.", username)
+        return db_def
 
-def get_generated_report_instance(db: Session, instance_id: int) -> Optional[models.GeneratedReportInstance]:
-    return db.query(models.GeneratedReportInstance).filter(models.GeneratedReportInstance.id == instance_id).first()
+    def get_definition_by_id(self, db: Session, def_id: int) -> Optional[models.ReportDefinition]:
+        return db.query(models.ReportDefinition).filter(models.ReportDefinition.id == def_id).first()
+
+    def get_definition_by_code(self, db: Session, report_code: str) -> Optional[models.ReportDefinition]:
+        return db.query(models.ReportDefinition).filter(models.ReportDefinition.report_code == report_code).order_by(models.ReportDefinition.version.desc()).first()
 
 
-# --- Dashboard Services (Conceptual) ---
-def get_dashboard_definition(db: Session, dashboard_code: str) -> Optional[models.DashboardDefinition]:
-    return db.query(models.DashboardDefinition).filter(models.DashboardDefinition.dashboard_code == dashboard_code).first()
+    def get_definitions(self, db: Session, skip: int = 0, limit: int = 100) -> Tuple[List[models.ReportDefinition], int]:
+        query = db.query(models.ReportDefinition)
+        total = query.count()
+        defs = query.order_by(models.ReportDefinition.report_name).offset(skip).limit(limit).all()
+        return defs, total
 
-def get_dashboard_data(db: Session, dashboard_code: str, user_id: str) -> Dict[str, Any]:
-    """
-    Fetches data for all widgets defined in a dashboard.
-    Returns a dictionary where keys are widget_ids and values are ReportExecutionResult-like data.
-    """
-    dashboard_def = get_dashboard_definition(db, dashboard_code)
-    if not dashboard_def:
-        raise NotFoundException(f"Dashboard definition '{dashboard_code}' not found.")
+    def update_definition(self, db: Session, def_id: int, def_upd: schemas.ReportDefinitionUpdate, username: str) -> Optional[models.ReportDefinition]:
+        db_def = self.get_definition_by_id(db, def_id)
+        if not db_def: return None
 
-    # layout_config = json.loads(dashboard_def.layout_config_json or "{}")
-    # widgets = layout_config.get("widgets", [])
-    widgets_mock = [ # Mocking the widget config that would come from layout_config_json
-        {"id": "widget1", "report_definition_code": "KPI_TOTAL_ACTIVE_CUSTOMERS", "parameters": {}, "output_format": "JSON"},
-        {"id": "widget2", "report_definition_code": "DAILY_TRANSACTION_SUMMARY", "parameters": {"date_range": "TODAY"}, "output_format": "JSON"}
-    ]
+        update_data = def_upd.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            if value is not None: # Ensure optional fields are not set to None if not provided
+                # Handle JSON fields specifically
+                if field.endswith("_json") and value is not None:
+                    setattr(db_def, field, json.dumps(value.dict() if hasattr(value, 'dict') else value))
+                else:
+                    setattr(db_def, field, value)
 
-    dashboard_data = {}
-    for widget_conf_dict in widgets_mock: # Iterate over actual widgets from layout_config
-        widget_id = widget_conf_dict.get("id")
-        report_code = widget_conf_dict.get("report_definition_code") # Or kpi_code
-        params = widget_conf_dict.get("parameters", {})
-        output_format = widget_conf_dict.get("output_format", "JSON") # Default to JSON for dashboard widgets
+        db_def.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_def)
+        self._audit_log(db, "REPORT_DEF_UPDATE", "ReportDefinition", db_def.id, f"Report definition '{db_def.report_name}' updated.", username)
+        return db_def
 
-        if not report_code or not widget_id:
-            dashboard_data[widget_id or f"unknown_widget_{random.randint(1,100)}"] = {"error": "Widget misconfigured: missing report_code or id"}
-            continue
+    def delete_definition(self, db: Session, def_id: int, username: str) -> bool:
+        db_def = self.get_definition_by_id(db, def_id)
+        if not db_def: return False
+        # Consider implications: what happens to scheduled reports using this def? (ondelete=CASCADE handles DB level)
+        self._audit_log(db, "REPORT_DEF_DELETE", "ReportDefinition", db_def.id, f"Report definition '{db_def.report_name}' deleted.", username)
+        db.delete(db_def)
+        db.commit()
+        return True
+
+# --- GeneratedReportLog Service ---
+class GeneratedReportLogService(BaseReportingService):
+    def create_log_entry(self, db: Session, report_name: str, generated_by_user_id: int, output_format: str,
+                         report_def_id: Optional[int] = None, scheduled_rep_id: Optional[int] = None,
+                         params_used: Optional[Dict[str, Any]] = None) -> models.GeneratedReportLog:
+        db_log = models.GeneratedReportLog(
+            report_definition_id=report_def_id,
+            scheduled_report_id=scheduled_rep_id,
+            report_name_generated=report_name,
+            generated_by_user_id=generated_by_user_id,
+            parameters_used_json=json.dumps(params_used) if params_used else None,
+            output_format=output_format,
+            status=models.ReportStatusEnum.PENDING
+        )
+        db.add(db_log)
+        db.commit()
+        db.refresh(db_log)
+        return db_log
+
+    def update_log_status_success(self, db: Session, log_id: int, file_name: Optional[str], file_path: Optional[str], file_size: Optional[int], processing_time_sec: Optional[int]):
+        db_log = db.query(models.GeneratedReportLog).filter(models.GeneratedReportLog.id == log_id).first()
+        if db_log:
+            db_log.status = models.ReportStatusEnum.SUCCESS
+            db_log.file_name = file_name
+            db_log.file_path_or_link = file_path
+            db_log.file_size_bytes = file_size
+            db_log.processing_time_seconds = processing_time_sec
+            db_log.error_message = None
+            db.commit()
+            db.refresh(db_log)
+        return db_log
+
+    def update_log_status_failed(self, db: Session, log_id: int, error_message: str, processing_time_sec: Optional[int]):
+        db_log = db.query(models.GeneratedReportLog).filter(models.GeneratedReportLog.id == log_id).first()
+        if db_log:
+            db_log.status = models.ReportStatusEnum.FAILED
+            db_log.error_message = error_message
+            db_log.processing_time_seconds = processing_time_sec
+            db.commit()
+            db.refresh(db_log)
+        return db_log
+
+    def get_log_by_id(self, db: Session, log_id: int) -> Optional[models.GeneratedReportLog]:
+        return db.query(models.GeneratedReportLog).options(joinedload(models.GeneratedReportLog.report_definition)).filter(models.GeneratedReportLog.id == log_id).first()
+
+    def get_logs(self, db: Session, user_id: Optional[int] = None, definition_id: Optional[int] = None, skip: int = 0, limit: int = 100) -> Tuple[List[models.GeneratedReportLog], int]:
+        query = db.query(models.GeneratedReportLog).options(joinedload(models.GeneratedReportLog.report_definition))
+        if user_id: query = query.filter(models.GeneratedReportLog.generated_by_user_id == user_id)
+        if definition_id: query = query.filter(models.GeneratedReportLog.report_definition_id == definition_id)
+        total = query.count()
+        logs = query.order_by(models.GeneratedReportLog.generation_timestamp.desc()).offset(skip).limit(limit).all()
+        return logs, total
+
+# --- ReportGeneration Service (Core Logic) ---
+class ReportGenerationService(BaseReportingService):
+    def __init__(self, db: Session, log_service: GeneratedReportLogService, def_service: ReportDefinitionService):
+        self.db = db # Pass session for complex queries
+        self.log_service = log_service
+        self.def_service = def_service
+
+    def _format_data_to_csv(self, data: List[Dict[str, Any]]) -> str:
+        if not data: return ""
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=data[0].keys())
+        writer.writeheader()
+        writer.writerows(data)
+        return output.getvalue()
+
+    def _execute_sql_report(self, sql_template: str, params: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # IMPORTANT: Ensure params are safely bound, not directly formatted into SQL string, to prevent SQL injection.
+        # SQLAlchemy's text() handles parameter binding.
+        stmt = text(sql_template)
+        result_proxy = self.db.execute(stmt, params or {})
+        # Convert rows to list of dicts
+        # data = [dict(row) for row in result_proxy] # For SQLAlchemy 1.x
+        data = [dict(row._mapping) for row in result_proxy] # For SQLAlchemy 2.x with Row._mapping
+        return data
+
+    def _execute_dynamic_filter_report(self, model_name: str, filters: Dict, select_fields: Optional[List[str]], sort_by: Optional[str]) -> List[Dict[str, Any]]:
+        # This is highly conceptual and complex.
+        # It requires a mapping from model_name (string) to actual SQLAlchemy model classes.
+        # And a robust filter parser to convert {"field": "op:value"} into SQLAlchemy filter conditions.
+        # Example: target_model = getattr(all_models, model_name, None)
+        # if not target_model: raise ValueError(f"Unknown model: {model_name}")
+        # query = self.db.query(target_model)
+        # ... apply filters, select, sort ...
+        # data = [row.__dict__ for row in query.all()] # Simple conversion
+        print(f"SIMULATING DYNAMIC FILTER: Model: {model_name}, Filters: {filters}, Select: {select_fields}, Sort: {sort_by}")
+        # Placeholder data
+        if model_name == "Customer":
+            return [
+                {"id": 1, "name": "John Doe", "email": "john@example.com", "tier": "TIER_1"},
+                {"id": 2, "name": "Jane Smith", "email": "jane@example.com", "tier": "TIER_2"},
+            ]
+        return [{"message": "Dynamic filter report simulation - no actual data"}]
+
+
+    def generate_report_from_definition(self, def_id: int, params: Optional[Dict[str, Any]], output_format: str, generated_by_user_id: int, username: str) -> models.GeneratedReportLog:
+        report_def = self.def_service.get_definition_by_id(self.db, def_id)
+        if not report_def:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report definition not found.")
+
+        log_entry = self.log_service.create_log_entry(
+            self.db, report_name=report_def.report_name, generated_by_user_id=generated_by_user_id,
+            output_format=output_format, report_def_id=report_def.id, params_used=params
+        )
+
+        start_time = datetime.utcnow()
+        raw_data: List[Dict[str, Any]] = []
+        error_msg: Optional[str] = None
 
         try:
-            # For dashboards, we usually want direct data, not just a log entry.
-            # So, we might call a simplified execute_report that returns data directly or an error.
-            # This is a conceptual call pattern.
-            report_exec_req = schemas.ReportExecutionRequest(report_code=report_code, parameters=params, output_format=output_format)
-            # Using the main execute_report for consistency, it returns data for JSON format.
-            widget_data_result = execute_report(db, report_exec_req, user_id)
-            dashboard_data[widget_id] = widget_data_result # This is ReportExecutionResult schema
+            # Validate params against report_def.parameters_schema_json (conceptual)
+            # ...
+
+            query_details = self._parse_json_field(report_def.query_details_json)
+            if not query_details:
+                raise ValueError("Invalid query details in report definition.")
+
+            if report_def.query_logic_type == models.ReportQueryLogicTypeEnum.PREDEFINED_SQL:
+                if not isinstance(query_details, dict) or "sql_template" not in query_details:
+                     raise ValueError("SQL template missing in query details for PREDEFINED_SQL report.")
+                raw_data = self._execute_sql_report(query_details["sql_template"], params)
+
+            elif report_def.query_logic_type == models.ReportQueryLogicTypeEnum.DYNAMIC_FILTERS_ON_MODEL:
+                # This requires query_details to be parsed into schemas.QueryDetailsDynamicFilters
+                # For simplicity, assuming it's already a dict with expected keys.
+                if not isinstance(query_details, dict) or "base_model_name" not in query_details:
+                    raise ValueError("Base model name missing for DYNAMIC_FILTERS report.")
+                raw_data = self._execute_dynamic_filter_report(
+                    query_details["base_model_name"],
+                    params or {}, # Assuming params directly map to filters for this type
+                    query_details.get("default_select_fields"),
+                    query_details.get("default_sort_by")
+                )
+            elif report_def.query_logic_type == models.ReportQueryLogicTypeEnum.PYTHON_SCRIPT:
+                # Placeholder: Invoke a python script/function
+                # raw_data = some_python_script_runner(query_details.get("script_path"), params)
+                raise NotImplementedError("Python script execution for reports not yet implemented.")
+            else:
+                raise ValueError(f"Unsupported query logic type: {report_def.query_logic_type}")
+
+            # Format data (conceptual - only CSV implemented simply)
+            formatted_output: Union[str, List[Dict[str, Any]]]
+            file_name_final = f"{report_def.report_code.replace(' ','_')}_{start_time.strftime('%Y%m%d%H%M%S')}.{output_format.lower()}"
+
+            if output_format.upper() == "CSV":
+                formatted_output = self._format_data_to_csv(raw_data)
+                # In real app, save to S3/file system and get path/link
+                # For now, we'll just indicate success and conceptually store it.
+                file_path_final = f"/reports_storage/{file_name_final}" # Placeholder
+                file_size_final = len(formatted_output.encode('utf-8'))
+
+                self.log_service.update_log_status_success(
+                    self.db, log_entry.id, file_name_final, file_path_final, file_size_final,
+                    int((datetime.utcnow() - start_time).total_seconds())
+                )
+            elif output_format.upper() == "JSON":
+                formatted_output = raw_data # Already in desired list of dicts
+                file_path_final = f"/reports_storage/{file_name_final}" # Placeholder
+                file_size_final = len(json.dumps(formatted_output).encode('utf-8'))
+                self.log_service.update_log_status_success(
+                     self.db, log_entry.id, file_name_final, file_path_final, file_size_final,
+                    int((datetime.utcnow() - start_time).total_seconds())
+                )
+
+            else: # PDF, XLSX etc.
+                raise NotImplementedError(f"Output format {output_format} not yet supported.")
+
+            self._audit_log(self.db, "REPORT_GENERATE_SUCCESS", "GeneratedReportLog", log_entry.id, f"Report '{report_def.report_name}' generated.", username)
+
         except Exception as e:
-            dashboard_data[widget_id] = {"error": str(e), "report_code": report_code, "params": params}
+            error_msg = str(e)
+            self.log_service.update_log_status_failed(
+                self.db, log_entry.id, error_msg,
+                int((datetime.utcnow() - start_time).total_seconds())
+            )
+            self._audit_log(self.db, "REPORT_GENERATE_FAIL", "GeneratedReportLog", log_entry.id, f"Report '{report_def.report_name}' generation failed: {error_msg}", username)
+            # Do not re-raise HTTPException here as it's an async/background type process ideally.
+            # The log entry reflects the failure. The API endpoint will return the log entry.
 
-    return dashboard_data
+        db.refresh(log_entry) # Get final state of log entry
+        return log_entry
 
-# --- KPI Services (Conceptual) ---
-# def calculate_and_store_kpi_snapshot(db: Session, kpi_code: str):
-#     kpi_def = db.query(models.KPIDefinition).filter(models.KPIDefinition.kpi_code == kpi_code).first()
-#     if not kpi_def: raise NotFoundException(f"KPI Definition {kpi_code} not found.")
-#
-#     # Execute kpi_def.data_source_query_or_logic to get the value
-#     # value = _execute_kpi_query(db, kpi_def.data_source_query_or_logic)
-#     mock_value = decimal.Decimal(random.uniform(100, 10000)) # Mock
-#
-#     snapshot = models.KPISnapshot(kpi_definition_id=kpi_def.id, snapshot_timestamp=datetime.utcnow(), value=mock_value)
-#     db.add(snapshot)
-#     db.commit()
-#     return snapshot
 
-# This module acts as an aggregator and presenter.
-# It needs robust read access to potentially many other modules' data.
-# Performance considerations (query optimization, caching, read replicas, or even a separate data warehouse/data lake)
-# are very important for a real-world Reports & Analytics module.
-# The `_fetch_data_for_report` is the heart of this and would be very complex.
+# --- ScheduledReport Service ---
+class ScheduledReportService(BaseReportingService):
+    # CRUD, and methods to list upcoming runs, update next_run_at after execution
+    # Actual execution trigger would be an external scheduler (Celery Beat, K8s CronJob)
+    # calling an endpoint or a command that uses ReportGenerationService.
+    def create_schedule(self, db: Session, sched_in: schemas.ScheduledReportCreate, user_id: int, username: str) -> models.ScheduledReport:
+        # Validate report_definition_id
+        if not ReportDefinitionService().get_definition_by_id(db, sched_in.report_definition_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report definition not found.")
 
-# Import random for mock data generation
-import random
-# Import func for count queries if used
-from sqlalchemy import func
+        next_run = calculate_next_run(sched_in.cron_expression)
+
+        db_sched = models.ScheduledReport(
+            **sched_in.dict(exclude_unset=True, exclude={"parameters_values_json", "recipients_json"}),
+            parameters_values_json=json.dumps(sched_in.parameters_values_json) if sched_in.parameters_values_json else None,
+            recipients_json=json.dumps(sched_in.recipients_json) if sched_in.recipients_json else None,
+            next_run_at=next_run,
+            created_by_user_id=user_id
+        )
+        db.add(db_sched)
+        db.commit()
+        db.refresh(db_sched)
+        self._audit_log(db, "SCHED_REPORT_CREATE", "ScheduledReport", db_sched.id, f"Scheduled report '{db_sched.schedule_name or db_sched.id}' created.", username)
+        return db_sched
+
+    def get_schedule_by_id(self, db: Session, sched_id: int) -> Optional[models.ScheduledReport]:
+        return db.query(models.ScheduledReport).options(joinedload(models.ScheduledReport.report_definition)).filter(models.ScheduledReport.id == sched_id).first()
+
+    def get_schedules(self, db: Session, skip: int = 0, limit: int = 100) -> Tuple[List[models.ScheduledReport], int]:
+        query = db.query(models.ScheduledReport).options(joinedload(models.ScheduledReport.report_definition))
+        total = query.count()
+        schedules = query.order_by(models.ScheduledReport.next_run_at.asc()).offset(skip).limit(limit).all()
+        return schedules, total
+
+    def update_schedule(self, db: Session, sched_id: int, sched_upd: schemas.ScheduledReportUpdate, username: str) -> Optional[models.ScheduledReport]:
+        db_sched = self.get_schedule_by_id(db, sched_id)
+        if not db_sched: return None
+
+        update_data = sched_upd.dict(exclude_unset=True)
+        cron_changed = False
+        if "cron_expression" in update_data and update_data["cron_expression"] != db_sched.cron_expression:
+            cron_changed = True
+
+        for field, value in update_data.items():
+             if value is not None:
+                if field.endswith("_json") and value is not None:
+                    setattr(db_sched, field, json.dumps(value))
+                else:
+                    setattr(db_sched, field, value)
+
+        if cron_changed:
+            db_sched.next_run_at = calculate_next_run(db_sched.cron_expression, db_sched.last_run_at or datetime.utcnow())
+
+        db_sched.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_sched)
+        self._audit_log(db, "SCHED_REPORT_UPDATE", "ScheduledReport", db_sched.id, f"Scheduled report '{db_sched.schedule_name or db_sched.id}' updated.", username)
+        return db_sched
+
+    def delete_schedule(self, db: Session, sched_id: int, username: str) -> bool:
+        db_sched = self.get_schedule_by_id(db, sched_id)
+        if not db_sched: return False
+        self._audit_log(db, "SCHED_REPORT_DELETE", "ScheduledReport", db_sched.id, f"Scheduled report '{db_sched.schedule_name or db_sched.id}' deleted.", username)
+        db.delete(db_sched)
+        db.commit()
+        return True
+
+    def record_schedule_run(self, db: Session, sched_id: int, run_status: models.ReportStatusEnum, log_entry: Optional[models.GeneratedReportLog] = None, error_msg: Optional[str] = None):
+        db_sched = self.get_schedule_by_id(db, sched_id)
+        if db_sched:
+            db_sched.last_run_at = datetime.utcnow()
+            db_sched.last_run_status = run_status
+            db_sched.last_error_message = error_msg if run_status == models.ReportStatusEnum.FAILED else None
+
+            if db_sched.status != models.ScheduledReportStatusEnum.COMPLETED_ONCE: # Don't update next_run for one-off
+                db_sched.next_run_at = calculate_next_run(db_sched.cron_expression, db_sched.last_run_at)
+
+            if run_status == models.ReportStatusEnum.FAILED and db_sched.status == models.ScheduledReportStatusEnum.ACTIVE:
+                db_sched.status = models.ScheduledReportStatusEnum.ERROR_STATE # Mark schedule as needing attention
+
+            db.commit()
+            # Audit this specific run via GeneratedReportLog or a dedicated schedule execution log.
+
+# --- DashboardLayout Service ---
+class DashboardLayoutService(BaseReportingService):
+    # CRUD for dashboard layouts
+    def create_layout(self, db: Session, layout_in: schemas.DashboardLayoutCreate, user_id: int, username: str) -> models.DashboardLayout:
+        if layout_in.is_default: # Ensure only one default per user
+            existing_default = db.query(models.DashboardLayout).filter(models.DashboardLayout.user_id == user_id, models.DashboardLayout.is_default == True).first()
+            if existing_default:
+                existing_default.is_default = False # Unset old default
+
+        db_layout = models.DashboardLayout(
+            user_id=user_id,
+            dashboard_name=layout_in.dashboard_name,
+            layout_config_json=json.dumps([w.dict() for w in layout_in.layout_config_json]), # Ensure widgets are dicts
+            is_default=layout_in.is_default
+        )
+        db.add(db_layout)
+        db.commit()
+        db.refresh(db_layout)
+        self._audit_log(db, "DASH_LAYOUT_CREATE", "DashboardLayout", db_layout.id, f"Dashboard '{db_layout.dashboard_name}' created.", username)
+        return db_layout
+
+    def get_layout_by_id(self, db: Session, layout_id: int, user_id: int) -> Optional[models.DashboardLayout]: # User ID for auth
+        return db.query(models.DashboardLayout).filter(models.DashboardLayout.id == layout_id, models.DashboardLayout.user_id == user_id).first()
+
+    def get_layouts_for_user(self, db: Session, user_id: int) -> List[models.DashboardLayout]:
+        return db.query(models.DashboardLayout).filter(models.DashboardLayout.user_id == user_id).order_by(models.DashboardLayout.dashboard_name).all()
+
+    def get_default_layout_for_user(self, db: Session, user_id: int) -> Optional[models.DashboardLayout]:
+        return db.query(models.DashboardLayout).filter(models.DashboardLayout.user_id == user_id, models.DashboardLayout.is_default == True).first()
+
+
+    def update_layout(self, db: Session, layout_id: int, layout_upd: schemas.DashboardLayoutUpdate, user_id: int, username: str) -> Optional[models.DashboardLayout]:
+        db_layout = self.get_layout_by_id(db, layout_id, user_id)
+        if not db_layout: return None
+
+        if layout_upd.is_default == True and not db_layout.is_default: # Setting new default
+            existing_default = db.query(models.DashboardLayout).filter(models.DashboardLayout.user_id == user_id, models.DashboardLayout.is_default == True, models.DashboardLayout.id != layout_id).first()
+            if existing_default:
+                existing_default.is_default = False
+
+        update_data = layout_upd.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            if value is not None:
+                if field == "layout_config_json":
+                    setattr(db_layout, field, json.dumps([w.dict() for w in value]))
+                else:
+                    setattr(db_layout, field, value)
+
+        db_layout.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_layout)
+        self._audit_log(db, "DASH_LAYOUT_UPDATE", "DashboardLayout", db_layout.id, f"Dashboard '{db_layout.dashboard_name}' updated.", username)
+        return db_layout
+
+    def delete_layout(self, db: Session, layout_id: int, user_id: int, username: str) -> bool:
+        db_layout = self.get_layout_by_id(db, layout_id, user_id)
+        if not db_layout: return False
+        if db_layout.is_default:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete default dashboard. Set another as default first.")
+
+        self._audit_log(db, "DASH_LAYOUT_DELETE", "DashboardLayout", db_layout.id, f"Dashboard '{db_layout.dashboard_name}' deleted.", username)
+        db.delete(db_layout)
+        db.commit()
+        return True
+
+# Instantiate services
+report_definition_service = ReportDefinitionService()
+generated_report_log_service = GeneratedReportLogService()
+# ReportGenerationService needs db, log_service, def_service passed on instantiation or method call
+scheduled_report_service = ScheduledReportService()
+dashboard_layout_service = DashboardLayoutService()

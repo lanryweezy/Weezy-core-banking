@@ -1,260 +1,295 @@
 # Pydantic schemas for Loan Management Module
-from pydantic import BaseModel, Field, validator
-from typing import Optional, List
+from pydantic import BaseModel, Field, validator, EmailStr
+from typing import Optional, List, Dict, Any # Added Dict, Any
 from datetime import datetime, date
 import decimal
+import enum # For Pydantic enums
 
-from .models import LoanApplicationStatusEnum, LoanAccountStatusEnum, CurrencyEnum # Import enums
+# Import enums from models to ensure consistency or define schema-specific versions
+from .models import (
+    LoanApplicationStatusEnum as ModelLoanApplicationStatusEnum,
+    LoanAccountStatusEnum as ModelLoanAccountStatusEnum,
+    CurrencyEnum as ModelCurrencyEnum,
+    InterestTypeEnum as ModelInterestTypeEnum,
+    RepaymentFrequencyEnum as ModelRepaymentFrequencyEnum,
+    GuarantorTypeEnum as ModelGuarantorTypeEnum
+)
+
+# Schema Enums (ensure string values for API)
+class CurrencySchema(str, enum.Enum):
+    NGN = "NGN"
+    USD = "USD"
+
+class InterestTypeSchema(str, enum.Enum):
+    REDUCING_BALANCE = "REDUCING_BALANCE"
+    FLAT = "FLAT"
+    INTEREST_ONLY = "INTEREST_ONLY"
+
+class RepaymentFrequencySchema(str, enum.Enum):
+    MONTHLY = "MONTHLY"
+    QUARTERLY = "QUARTERLY"
+    BI_ANNUALLY = "BI_ANNUALLY"
+    ANNUALLY = "ANNUALLY"
+    BULLET = "BULLET"
+
+class LoanApplicationStatusSchema(str, enum.Enum):
+    DRAFT = "DRAFT"; SUBMITTED = "SUBMITTED"; UNDER_REVIEW = "UNDER_REVIEW"
+    PENDING_DOCUMENTATION = "PENDING_DOCUMENTATION"; APPROVED = "APPROVED"
+    REJECTED = "REJECTED"; PENDING_DISBURSEMENT = "PENDING_DISBURSEMENT"
+    DISBURSED = "DISBURSED"; WITHDRAWN = "WITHDRAWN"; EXPIRED = "EXPIRED"
+
+class LoanAccountStatusSchema(str, enum.Enum):
+    ACTIVE = "ACTIVE"; PAID_OFF = "PAID_OFF"; OVERDUE = "OVERDUE"
+    DEFAULTED = "DEFAULTED"; RESTRUCTURED = "RESTRUCTURED"; WRITTEN_OFF = "WRITTEN_OFF"
+
+class GuarantorTypeSchema(str, enum.Enum):
+    INDIVIDUAL = "INDIVIDUAL"
+    CORPORATE = "CORPORATE"
+
 
 # --- Loan Product Schemas ---
 class LoanProductBase(BaseModel):
-    name: str = Field(..., min_length=3)
+    product_code: str = Field(..., min_length=3, max_length=20, pattern=r"^[A-Z0-9_]+$")
+    name: str = Field(..., min_length=3, max_length=100)
     description: Optional[str] = None
+    currency: CurrencySchema = CurrencySchema.NGN
     min_amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
     max_amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
-    interest_rate_pa: decimal.Decimal = Field(..., ge=0, decimal_places=2, description="Annual interest rate in percentage, e.g., 15.5 for 15.5%")
+    interest_rate_pa: decimal.Decimal = Field(..., ge=0, decimal_places=4) # e.g. 15.5000 for 15.5%
+    interest_type: InterestTypeSchema = InterestTypeSchema.REDUCING_BALANCE
     min_tenor_months: int = Field(..., gt=0)
     max_tenor_months: int = Field(..., gt=0)
+    repayment_frequency: RepaymentFrequencySchema = RepaymentFrequencySchema.MONTHLY
+    linked_fee_codes_json: Optional[List[str]] = Field(None, description='List of applicable fee codes')
+    eligibility_criteria_json: Optional[Dict[str, Any]] = Field(None, description='JSON defining eligibility rules')
+    crms_product_code: Optional[str] = Field(None, max_length=10)
     is_active: bool = True
 
     @validator('max_amount')
     def max_amount_must_be_greater_than_min(cls, v, values):
         if 'min_amount' in values and v < values['min_amount']:
-            raise ValueError('Max amount must be greater than or equal to min amount')
+            raise ValueError('Max amount must be >= min amount')
         return v
-
     @validator('max_tenor_months')
     def max_tenor_must_be_greater_than_min(cls, v, values):
         if 'min_tenor_months' in values and v < values['min_tenor_months']:
-            raise ValueError('Max tenor must be greater than or equal to min tenor')
+            raise ValueError('Max tenor must be >= min tenor')
         return v
 
-class LoanProductCreate(LoanProductBase):
+class LoanProductCreateRequest(LoanProductBase): # Renamed from LoanProductCreate
     pass
 
 class LoanProductResponse(LoanProductBase):
     id: int
-
-    class Config:
-        orm_mode = True
-        json_encoders = { decimal.Decimal: lambda v: str(v) }
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- Loan Application Schemas ---
 class LoanApplicationBase(BaseModel):
     customer_id: int
-    loan_product_id: int
+    loan_product_id: int # FK to loan_products.id
     requested_amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
+    requested_currency: CurrencySchema = CurrencySchema.NGN
     requested_tenor_months: int = Field(..., gt=0)
     loan_purpose: Optional[str] = None
 
-class LoanApplicationCreate(LoanApplicationBase):
-    pass # Submitted by customer or agent
+class LoanApplicationCreateRequest(LoanApplicationBase): # Renamed
+    pass
 
-class LoanApplicationUpdate(BaseModel): # For internal updates by loan officers/system
-    status: Optional[LoanApplicationStatusEnum] = None
+class LoanApplicationUpdateRequest(BaseModel): # Renamed from LoanApplicationUpdate
+    status: Optional[LoanApplicationStatusSchema] = None
     credit_score: Optional[int] = None
-    risk_rating: Optional[str] = None
+    risk_rating: Optional[str] = Field(None, max_length=50)
     decision_reason: Optional[str] = None
-    # Potentially add fields for adjusting requested_amount/tenor by bank during review
+    approved_amount: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=2)
+    approved_tenor_months: Optional[int] = Field(None, gt=0)
+    approved_interest_rate_pa: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=4)
+    crms_application_status: Optional[str] = Field(None, max_length=50)
+    credit_bureau_report_id: Optional[str] = Field(None, max_length=50)
 
 class LoanApplicationResponse(LoanApplicationBase):
     id: int
     application_reference: str
-    status: LoanApplicationStatusEnum
+    status: LoanApplicationStatusSchema
     credit_score: Optional[int] = None
     risk_rating: Optional[str] = None
     decision_reason: Optional[str] = None
+    approved_amount: Optional[decimal.Decimal] = None
+    approved_tenor_months: Optional[int] = None
+    approved_interest_rate_pa: Optional[decimal.Decimal] = None
+    crms_application_status: Optional[str] = None
+    credit_bureau_report_id: Optional[str] = None
     submitted_at: datetime
     approved_at: Optional[datetime] = None
     rejected_at: Optional[datetime] = None
     disbursed_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    loan_product: Optional[LoanProductResponse] = None
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
-    loan_product: Optional[LoanProductResponse] = None # Nested response for product details
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: lambda v: str(v) }
-
-# --- Loan Account Schemas (Active Loans) ---
+# --- Loan Account Schemas ---
 class LoanAccountBase(BaseModel):
-    # application_id: int # Usually derived, not directly set
-    # customer_id: int # Usually derived
-    # disbursement_account_id: int # Customer's savings/current account NUBAN where loan is paid
-    principal_disbursed: decimal.Decimal
-    interest_rate_pa: decimal.Decimal
+    principal_disbursed: decimal.Decimal = Field(..., decimal_places=2)
+    currency: CurrencySchema
+    interest_rate_pa: decimal.Decimal = Field(..., decimal_places=4)
     tenor_months: int
-    disbursement_date: date # Or datetime
+    disbursement_date: date
     first_repayment_date: date
     maturity_date: date
+    disbursement_account_number: str = Field(..., min_length=10, max_length=10)
+    loan_purpose_code: Optional[str] = Field(None, max_length=10)
+
 
 class LoanAccountResponse(LoanAccountBase):
     id: int
     loan_account_number: str
     application_id: int
     customer_id: int
-
-    principal_outstanding: decimal.Decimal
-    interest_outstanding: decimal.Decimal
-    fees_outstanding: decimal.Decimal
-    penalties_outstanding: decimal.Decimal
-
-    total_repaid_principal: decimal.Decimal
-    total_repaid_interest: decimal.Decimal
-
-    status: LoanAccountStatusEnum
+    principal_outstanding: decimal.Decimal = Field(..., decimal_places=2)
+    interest_outstanding: decimal.Decimal = Field(..., decimal_places=2)
+    fees_outstanding: decimal.Decimal = Field(..., decimal_places=2)
+    penalties_outstanding: decimal.Decimal = Field(..., decimal_places=2)
+    total_repaid_principal: decimal.Decimal = Field(..., decimal_places=2)
+    total_repaid_interest: decimal.Decimal = Field(..., decimal_places=2)
+    status: LoanAccountStatusSchema
+    crms_loan_status: Optional[str] = Field(None, max_length=50)
     next_repayment_date: Optional[date] = None
     days_past_due: int = 0
     last_repayment_date: Optional[datetime] = None
-    last_repayment_amount: Optional[decimal.Decimal] = None
-
-    application: Optional[LoanApplicationResponse] = None # Nested app details
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str(v) for v in [decimal.Decimal] }
-
+    last_repayment_amount: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    application: Optional[LoanApplicationResponse] = None
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- Loan Repayment Schedule Schemas ---
-class LoanRepaymentScheduleEntry(BaseModel):
+class LoanRepaymentScheduleEntryResponse(BaseModel): # Renamed
+    id: int
+    loan_account_id: int
     due_date: date
     installment_number: int
-    principal_due: decimal.Decimal
-    interest_due: decimal.Decimal
-    fees_due: decimal.Decimal = decimal.Decimal('0.00')
-    total_due: decimal.Decimal
-    principal_paid: decimal.Decimal = decimal.Decimal('0.00')
-    interest_paid: decimal.Decimal = decimal.Decimal('0.00')
-    fees_paid: decimal.Decimal = decimal.Decimal('0.00')
+    principal_due: decimal.Decimal = Field(..., decimal_places=2)
+    interest_due: decimal.Decimal = Field(..., decimal_places=2)
+    fees_due: decimal.Decimal = Field(decimal.Decimal('0.00'), decimal_places=2)
+    total_due: decimal.Decimal = Field(..., decimal_places=2)
+    principal_paid: decimal.Decimal = Field(decimal.Decimal('0.00'), decimal_places=2)
+    interest_paid: decimal.Decimal = Field(decimal.Decimal('0.00'), decimal_places=2)
+    fees_paid: decimal.Decimal = Field(decimal.Decimal('0.00'), decimal_places=2)
     is_paid: bool = False
-    payment_date: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
-        json_encoders = { decimal.Decimal: str }
+    payment_date: Optional[date] = None
+    class Config: orm_mode = True; json_encoders = {decimal.Decimal: str}
 
 class LoanRepaymentScheduleResponse(BaseModel):
     loan_account_number: str
-    schedule: List[LoanRepaymentScheduleEntry]
+    schedule: List[LoanRepaymentScheduleEntryResponse]
 
-# --- Loan Repayment Schemas (Actual Payments) ---
-class LoanRepaymentCreate(BaseModel):
+# --- Loan Repayment Schemas ---
+class LoanRepaymentCreateRequest(BaseModel): # Renamed
     loan_account_number: str
+    financial_transaction_id: str # Link to master FT from TransactionManagement
     amount_paid: decimal.Decimal = Field(..., gt=0, decimal_places=2)
     payment_date: datetime = Field(default_factory=datetime.utcnow)
-    currency: CurrencyEnum = CurrencyEnum.NGN
-    payment_method: Optional[str] = None # e.g., 'DIRECT_DEBIT', 'NIP_TRANSFER'
-    reference: Optional[str] = None # Payment reference from gateway or teller
+    currency: CurrencySchema = CurrencySchema.NGN
+    payment_method: Optional[str] = Field(None, max_length=50)
+    reference: Optional[str] = Field(None, max_length=100)
 
 class LoanRepaymentResponse(BaseModel):
     id: int
     loan_account_id: int
-    # transaction_id: str # Link to financial_transactions
+    financial_transaction_id: str
     payment_date: datetime
-    amount_paid: decimal.Decimal
-    currency: CurrencyEnum
-
-    allocated_to_principal: decimal.Decimal
-    allocated_to_interest: decimal.Decimal
-    allocated_to_fees: decimal.Decimal
-    allocated_to_penalties: decimal.Decimal
-
+    amount_paid: decimal.Decimal = Field(..., decimal_places=2)
+    currency: CurrencySchema
+    allocated_to_principal: decimal.Decimal = Field(..., decimal_places=2)
+    allocated_to_interest: decimal.Decimal = Field(..., decimal_places=2)
+    allocated_to_fees: decimal.Decimal = Field(..., decimal_places=2)
+    allocated_to_penalties: decimal.Decimal = Field(..., decimal_places=2)
     payment_method: Optional[str] = None
     reference: Optional[str] = None
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
-
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- Guarantor and Collateral Schemas ---
 class GuarantorBase(BaseModel):
-    name: str
+    guarantor_type: GuarantorTypeSchema
+    name: str = Field(..., max_length=150)
     bvn: Optional[str] = Field(None, min_length=11, max_length=11, pattern=r"^\d{11}$")
-    phone: Optional[str] = None
-    email: Optional[str] = None # pydantic.EmailStr if strict validation needed
-    relationship_to_applicant: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=15)
+    email: Optional[EmailStr] = None
+    relationship_to_applicant: Optional[str] = Field(None, max_length=100)
+    address: Optional[str] = None
+    status: str = Field("ACTIVE", max_length=20)
 
-class GuarantorCreate(GuarantorBase):
-    loan_application_id: int # Or loan_account_id
+class GuarantorCreateRequest(GuarantorBase): # Renamed
+    loan_application_id: int
 
 class GuarantorResponse(GuarantorBase):
     id: int
     loan_application_id: int
-
-    class Config:
-        orm_mode = True
+    class Config: orm_mode = True; use_enum_values = True
 
 class CollateralBase(BaseModel):
-    type: str = Field(..., description="e.g., 'REAL_ESTATE', 'VEHICLE', 'STOCKS'")
+    type: str = Field(..., max_length=100, description="e.g., 'REAL_ESTATE', 'VEHICLE', 'STOCKS'")
     description: Optional[str] = None
     estimated_value: decimal.Decimal = Field(..., ge=0, decimal_places=2)
-    # document_urls: Optional[List[str]] = None # List of URLs to documents
+    currency: CurrencySchema = CurrencySchema.NGN
+    valuation_date: Optional[date] = None
+    location: Optional[str] = None
+    lien_reference: Optional[str] = Field(None, max_length=50)
+    status: str = Field("PLEDGED", max_length=20)
 
-class CollateralCreate(CollateralBase):
-    loan_application_id: int # Or loan_account_id
+class CollateralCreateRequest(CollateralBase): # Renamed
+    loan_application_id: int
 
 class CollateralResponse(CollateralBase):
     id: int
     loan_application_id: int
-
-    class Config:
-        orm_mode = True
-        json_encoders = { decimal.Decimal: str }
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- Other Schemas ---
 class LoanDisbursementRequest(BaseModel):
     application_id: int
-    disbursement_account_number: str # Customer's NUBAN to credit
-    # Potentially allow override of disbursed amount if less than approved
+    disbursement_account_number: str = Field(..., min_length=10, max_length=10)
+    # disbursement_amount: Optional[decimal.Decimal] = None # If different from approved amount
 
 class LoanDisbursementResponse(BaseModel):
     loan_account_number: str
-    amount_disbursed: decimal.Decimal
-    disbursement_date: datetime
-    status: str # e.g. "SUCCESSFUL"
-    transaction_reference: Optional[str] = None # Ref for the actual fund transfer
+    amount_disbursed: decimal.Decimal = Field(..., decimal_places=2)
+    disbursement_date: datetime # Changed to datetime to include time
+    status: str
+    financial_transaction_id: Optional[str] = None # Renamed from transaction_reference
 
-class CreditRiskAssessmentRequest(BaseModel):
+class CreditRiskAssessmentRequest(BaseModel): # Request to AI/Risk module
     application_id: int
-    # Include any data needed for the risk model not already in the application
-    # e.g., bureau_report_id, additional_financial_statement_data
+    # customer_bvn: str
+    # requested_amount: decimal.Decimal
+    # Other features for the model
+    # features: Dict[str, Any]
 
-class CreditRiskAssessmentResponse(BaseModel):
+class CreditRiskAssessmentResponse(BaseModel): # Response from AI/Risk module
     application_id: int
-    credit_score: int
-    risk_rating: str # e.g. 'A1', 'B2', 'LOW', 'HIGH'
-    recommended_loan_amount: Optional[decimal.Decimal] = None
-    assessment_details: Optional[dict] = None # For more granular risk factors
+    credit_score: Optional[int] = None
+    risk_rating: Optional[str] = None
+    # recommended_loan_amount: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    # assessment_details: Optional[Dict[str, Any]] = None
 
 class LoanRestructureRequest(BaseModel):
     loan_account_number: str
-    new_tenor_months: Optional[int] = None
-    new_interest_rate_pa: Optional[decimal.Decimal] = None
+    new_tenor_months: Optional[int] = Field(None, gt=0)
+    new_interest_rate_pa: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=4)
     reason: str
-    # effective_date: date
+    effective_date: Optional[date] = None
 
 class LoanWriteOffRequest(BaseModel):
     loan_account_number: str
     reason: str
-    write_off_amount: decimal.Decimal # Amount of principal being written off
-    # effective_date: date
+    write_off_amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
+    effective_date: Optional[date] = None
 
 class PaginatedLoanApplicationResponse(BaseModel):
     items: List[LoanApplicationResponse]
-    total: int
-    page: int
-    size: int
-    class Config:
-        json_encoders = { decimal.Decimal: str }
+    total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str}
 
 class PaginatedLoanAccountResponse(BaseModel):
     items: List[LoanAccountResponse]
-    total: int
-    page: int
-    size: int
-    class Config:
-        json_encoders = { decimal.Decimal: str }
+    total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str}

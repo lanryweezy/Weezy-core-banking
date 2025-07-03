@@ -1,132 +1,134 @@
 # Database models for Reports & Analytics Module
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Enum as SQLAlchemyEnum, Date
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, ForeignKey, Enum as SQLAlchemyEnum, UniqueConstraint
 from sqlalchemy.orm import relationship, declarative_base
 from sqlalchemy.sql import func
-
-# from weezy_cbs.database import Base
-Base = declarative_base() # Local Base for now
-
 import enum
 
-class ReportDefinition(Base): # For user-defined or frequently used reports
+from weezy_cbs.database import Base # Use the shared Base
+
+class ReportQueryLogicTypeEnum(enum.Enum):
+    PREDEFINED_SQL = "PREDEFINED_SQL"
+    DYNAMIC_FILTERS_ON_MODEL = "DYNAMIC_FILTERS_ON_MODEL"
+    PYTHON_SCRIPT = "PYTHON_SCRIPT"
+
+class ReportStatusEnum(enum.Enum):
+    PENDING = "PENDING"; PROCESSING = "PROCESSING"
+    SUCCESS = "SUCCESS"; FAILED = "FAILED"; CANCELLED = "CANCELLED"
+
+class ScheduledReportStatusEnum(enum.Enum):
+    ACTIVE = "ACTIVE"; PAUSED = "PAUSED"; ERROR_STATE = "ERROR_STATE"; COMPLETED_ONCE = "COMPLETED_ONCE"
+
+
+class ReportDefinition(Base):
     __tablename__ = "report_definitions"
     id = Column(Integer, primary_key=True, index=True)
-    report_code = Column(String, unique=True, nullable=False, index=True) # e.g., "DAILY_TRANSACTION_SUMMARY", "CUSTOMER_ACTIVITY_MONTHLY"
-    report_name = Column(String, nullable=False)
+    report_code = Column(String(50), unique=True, nullable=False, index=True)
+    report_name = Column(String(150), nullable=False)
     description = Column(Text, nullable=True)
 
-    # Source modules/tables this report queries from (informational or for dynamic query building)
-    # source_data_description_json = Column(Text) # e.g. {"modules": ["TransactionManagement", "CustomerIdentity"], "tables": ["financial_transactions", "customers"]}
+    source_modules_json = Column(Text, nullable=True) # JSON array: ["accounts", "transactions", "customers"]
 
-    # Parameters required by the report (JSON schema for parameters)
-    # parameters_schema_json = Column(Text) # e.g. {"type": "object", "properties": {"start_date": {"type": "string", "format": "date"}, "end_date": {"type": "string", "format": "date"}, "branch_code": {"type": "string"}}}
+    query_logic_type = Column(SQLAlchemyEnum(ReportQueryLogicTypeEnum), nullable=False)
+    query_details_json = Column(Text, nullable=False)
 
-    # Default output format
-    # default_output_format = Column(String, default="CSV") # CSV, PDF, XLSX, JSON
+    parameters_schema_json = Column(Text, nullable=True) # JSON Schema for parameters
 
-    # Query template or reference to a stored procedure / query generation logic
-    # query_template = Column(Text, nullable=True) # SQL template with placeholders for parameters
-    # query_generator_function_name = Column(String, nullable=True) # Name of a function in services.py that builds the query
+    default_output_formats_json = Column(Text, nullable=True) # JSON array: ["CSV", "PDF", "JSON"]
+    allowed_roles_json = Column(Text, nullable=True) # JSON array of role names (from core_infra users.roles)
 
-    # access_role_required = Column(String, nullable=True) # Role needed to run this report
+    is_system_report = Column(Boolean, default=False, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
 
+    # Ensure User model (core_infra) has: report_definitions_created = relationship("ReportDefinition", foreign_keys="[ReportDefinition.created_by_user_id]", back_populates="created_by_user")
+    created_by_user_id = Column(Integer, ForeignKey("users.id", name="fk_reportdef_createdby"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    # created_by_user_id = Column(Integer, ForeignKey("users.id"))
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-class SavedQuery(Base): # For users saving their custom ad-hoc queries
-    __tablename__ = "saved_queries"
+    # created_by_user = relationship("User", foreign_keys=[created_by_user_id]) # If User model is importable
+    scheduled_reports = relationship("ScheduledReport", back_populates="report_definition", cascade="all, delete-orphan")
+    generated_logs = relationship("GeneratedReportLog", back_populates="report_definition", cascade="all, delete-orphan") # If a def is deleted, logs might be orphaned or deleted.
+
+
+class ScheduledReport(Base):
+    __tablename__ = "scheduled_reports"
     id = Column(Integer, primary_key=True, index=True)
-    # user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True) # User who saved the query
-    query_name = Column(String, nullable=False)
-    description = Column(Text, nullable=True)
+    report_definition_id = Column(Integer, ForeignKey("report_definitions.id", name="fk_schedrep_repdef", ondelete="CASCADE"), nullable=False)
 
-    # The query itself (e.g. SQL, or parameters for a query builder)
-    # This can be risky if storing raw SQL from users. Parameterized query builder is safer.
-    query_language = Column(String, default="SQL_WEEZYQL") # "SQL_WEEZYQL" (our safe query DSL) or "RAW_SQL" (admin only)
-    query_text_or_params_json = Column(Text, nullable=False)
+    schedule_name = Column(String(150), nullable=True)
+    cron_expression = Column(String(100), nullable=False)
 
-    # Sharing settings
-    # is_shared = Column(Boolean, default=False)
-    # shared_with_roles_json = Column(Text, nullable=True) # JSON array of role names
+    parameters_values_json = Column(Text, nullable=True)
+    output_format = Column(String(10), default="CSV", nullable=False)
+    recipients_json = Column(Text, nullable=True) # JSON array of email addresses or user IDs
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    status = Column(SQLAlchemyEnum(ScheduledReportStatusEnum), default=ScheduledReportStatusEnum.ACTIVE, nullable=False, index=True)
     last_run_at = Column(DateTime(timezone=True), nullable=True)
+    next_run_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_run_status = Column(SQLAlchemyEnum(ReportStatusEnum), nullable=True)
+    last_error_message = Column(Text, nullable=True)
 
-    # user = relationship("User")
-
-class DashboardDefinition(Base): # Configuration for user dashboards
-    __tablename__ = "dashboard_definitions"
-    id = Column(Integer, primary_key=True, index=True)
-    dashboard_code = Column(String, unique=True, nullable=False, index=True) # e.g., "BRANCH_PERFORMANCE_MAIN", "AGENT_KPI_TRACKER"
-    dashboard_name = Column(String, nullable=False)
-    # user_id_owner = Column(Integer, ForeignKey("users.id"), nullable=True) # If user-specific dashboard
-    # role_id_default = Column(Integer, ForeignKey("roles.id"), nullable=True) # Default dashboard for a role
-
-    # Layout and widgets configuration (JSON)
-    # layout_config_json = Column(Text)
-    # e.g. {"grid_type": "2x2", "widgets": [
-    #    {"id": "widget1", "type": "KPI_TOTAL_CUSTOMERS", "report_def_code": "KPI_001", "params": {}, "position": "0,0"},
-    #    {"id": "widget2", "type": "CHART_TXN_VOLUME", "report_def_code": "CHART_002", "params": {"period": "LAST_7_DAYS"}, "position": "0,1"}
-    # ]}
-
-    is_default = Column(Boolean, default=False) # Is this a default dashboard for new users/roles?
+    # Ensure User model (core_infra) has: scheduled_reports_created = relationship("ScheduledReport", foreign_keys="[ScheduledReport.created_by_user_id]", back_populates="created_by_user")
+    created_by_user_id = Column(Integer, ForeignKey("users.id", name="fk_schedrep_createdby"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-class GeneratedReportInstance(Base): # Log of actual report instances generated from definitions or ad-hoc
-    __tablename__ = "generated_report_instances" # Different from compliance reports
+    report_definition = relationship("ReportDefinition", back_populates="scheduled_reports")
+    # created_by_user = relationship("User", foreign_keys=[created_by_user_id])
+    # generated_logs = relationship("GeneratedReportLog", back_populates="scheduled_report") # If linking logs back to schedule
+
+
+class GeneratedReportLog(Base):
+    __tablename__ = "generated_report_logs"
     id = Column(Integer, primary_key=True, index=True)
-    # report_definition_id = Column(Integer, ForeignKey("report_definitions.id"), nullable=True) # If from a definition
-    report_code_or_name = Column(String, nullable=False, index=True) # Code if from def, or ad-hoc name
+    report_definition_id = Column(Integer, ForeignKey("report_definitions.id", name="fk_genlog_repdef", ondelete="SET NULL"), nullable=True) # Keep log even if def is deleted
+    scheduled_report_id = Column(Integer, ForeignKey("scheduled_reports.id", name="fk_genlog_schedrep", ondelete="SET NULL"), nullable=True)
 
-    # parameters_used_json = Column(Text, nullable=True) # JSON of parameters used for this instance
-    # generated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+    report_name_generated = Column(String(200), nullable=False)
+    # Ensure User model (core_infra) has: reports_generated = relationship("GeneratedReportLog", foreign_keys="[GeneratedReportLog.generated_by_user_id]", back_populates="generated_by_user")
+    generated_by_user_id = Column(Integer, ForeignKey("users.id", name="fk_genlog_generatedby"), nullable=False)
+    generation_timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
-    output_format = Column(String) # CSV, PDF, JSON, XLSX
-    # file_path_or_url = Column(String, nullable=True) # Link to the generated file
-    # data_preview_json = Column(Text, nullable=True) # Small preview of data (e.g. first 10 rows) if not file based
+    parameters_used_json = Column(Text, nullable=True)
+    output_format = Column(String(10), nullable=False)
 
-    status = Column(String, default="COMPLETED") # PENDING, GENERATING, COMPLETED, FAILED
-    # error_message = Column(Text, nullable=True) # If failed
-    # execution_time_ms = Column(Integer, nullable=True)
+    status = Column(SQLAlchemyEnum(ReportStatusEnum), default=ReportStatusEnum.PENDING, nullable=False, index=True)
+    file_name = Column(String(255), nullable=True)
+    file_path_or_link = Column(Text, nullable=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    processing_time_seconds = Column(Integer, nullable=True)
 
-    # report_definition = relationship("ReportDefinition")
-    # user = relationship("User")
+    report_definition = relationship("ReportDefinition", back_populates="generated_logs")
+    scheduled_report = relationship("ScheduledReport") # Add back_populates="generated_logs" to ScheduledReport if bi-directional
+    # generated_by_user = relationship("User", foreign_keys=[generated_by_user_id])
 
-# This module typically doesn't store primary business data but rather metadata about reports,
-# configurations for dashboards, and instances of generated analytical outputs.
-# The main work is in the `services.py` to query other modules, aggregate data, and format it.
 
-# Key Performance Indicator (KPI) Definitions (could be a type of ReportDefinition)
-# class KPIDefinition(Base):
-#     __tablename__ = "kpi_definitions"
-#     id = Column(Integer, primary_key=True, index=True)
-#     kpi_code = Column(String, unique=True, nullable=False, index=True) # e.g. "TOTAL_ACTIVE_CUSTOMERS", "NPL_RATIO"
-#     kpi_name = Column(String, nullable=False)
-#     # data_source_query_or_logic = Column(Text) # How to calculate this KPI
-#     # target_value = Column(Numeric, nullable=True)
-#     # threshold_critical = Column(Numeric, nullable=True)
-#     # threshold_warning = Column(Numeric, nullable=True)
-#     # calculation_frequency = Column(String) # HOURLY, DAILY, WEEKLY
+class DashboardLayout(Base):
+    __tablename__ = "dashboard_layouts"
+    id = Column(Integer, primary_key=True, index=True)
+    # Ensure User model (core_infra) has: dashboard_layouts = relationship("DashboardLayout", foreign_keys="[DashboardLayout.user_id]", back_populates="user", cascade="all, delete-orphan")
+    user_id = Column(Integer, ForeignKey("users.id", name="fk_dash_user", ondelete="CASCADE"), nullable=False)
+    dashboard_name = Column(String(100), nullable=False)
 
-# class KPISnapshot(Base): # Stores calculated KPI values over time
-#     __tablename__ = "kpi_snapshots"
-#     id = Column(Integer, primary_key=True, index=True)
-#     kpi_definition_id = Column(Integer, ForeignKey("kpi_definitions.id"), nullable=False)
-#     snapshot_timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
-#     value = Column(Numeric(precision=20, scale=4), nullable=False)
-#     # status_derived = Column(String) # NORMAL, WARNING, CRITICAL (based on thresholds)
+    layout_config_json = Column(Text, nullable=False)
+    is_default = Column(Boolean, default=False, nullable=False)
 
-# The core data for reports and analytics will come from other modules:
-# - CustomerIdentityManagement: Customer demographics, KYC status, segments.
-# - AccountsLedgerManagement: Account balances, types, statuses, interest.
-# - LoanManagementModule: Loan portfolio, NPLs, disbursements, repayments.
-# - TransactionManagement: Transaction volumes, values, channels, trends.
-# - CardsWalletsManagement: Card usage, wallet balances, e-channel activity.
-# - FeesChargesCommissionEngine: Fee income, waivers.
-# - CRMSupport: Ticket volumes, resolution times, campaign effectiveness.
-# - TreasuryLiquidity: Bank positions, FX rates, investment yields.
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-# This module's services will need robust (read-only) access to those modules' data,
-# potentially via their service layers or direct DB queries (if optimized for reporting, e.g. read replicas or data warehouse).
+    # user = relationship("User", foreign_keys=[user_id]) # If User model is importable
+    __table_args__ = (UniqueConstraint('user_id', 'dashboard_name', name='uq_user_dashboard_name'),)
+
+# Notes on Foreign Keys and Relationships:
+# - `users.id` refers to the User model in `core_infrastructure_config_engine`.
+# - `ondelete="CASCADE"` on `ScheduledReport.report_definition_id` means if a ReportDefinition is deleted,
+#   all its schedules are also deleted.
+# - `ondelete="SET NULL"` on `GeneratedReportLog.report_definition_id` and `scheduled_report_id` means
+#   if the definition or schedule is deleted, the log entry remains but the foreign key is set to NULL.
+#   This preserves the log history.
+# - Bi-directional relationships (using `back_populates`) require corresponding relationship definitions
+#   in the other models (e.g., in User, ReportDefinition, ScheduledReport).
+# - Assumes a shared SQLAlchemy `Base` or careful handling of metadata for cross-module FKs.
+#   Table names like "users", "report_definitions" must be globally known to SQLAlchemy.
+#   If using DB schemas (e.g., "core_infra.users"), FKs must reflect that.
+#   For this project, we're assuming simple table names for now.

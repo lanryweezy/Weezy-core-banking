@@ -1,46 +1,81 @@
 # Pydantic schemas for Transaction Management
 from pydantic import BaseModel, Field, validator
-from typing import Optional, List, Dict
-from datetime import datetime
+from typing import Optional, List, Dict, Any # Added Any
+from datetime import datetime, date # Added date
 import decimal
+import enum # For Pydantic enums
 
-from .models import TransactionChannelEnum, TransactionStatusEnum, CurrencyEnum # Import enums
+# Import enums from models to ensure consistency
+from .models import (
+    TransactionChannelEnum as ModelTransactionChannelEnum,
+    TransactionStatusEnum as ModelTransactionStatusEnum,
+    CurrencyEnum as ModelCurrencyEnum,
+    TransactionTypeCategoryEnum as ModelTransactionTypeCategoryEnum
+)
+
+# Schema Enums
+class CurrencySchema(str, enum.Enum): # Replicated from accounts for independence if needed
+    NGN = "NGN"; USD = "USD"; EUR = "EUR"; GBP = "GBP"
+
+class TransactionChannelSchema(str, enum.Enum):
+    INTERNAL = "INTERNAL"; INTRA_BANK = "INTRA_BANK"; NIP = "NIP"; RTGS = "RTGS"
+    USSD = "USSD"; POS = "POS"; ATM = "ATM"; WEB_BANKING = "WEB_BANKING"
+    MOBILE_APP = "MOBILE_APP"; AGENT_BANKING = "AGENT_BANKING"
+    BULK_PAYMENT = "BULK_PAYMENT"; STANDING_ORDER = "STANDING_ORDER"
+    PAYMENT_GATEWAY = "PAYMENT_GATEWAY"; BILL_PAYMENT = "BILL_PAYMENT"
+
+class TransactionTypeCategorySchema(str, enum.Enum):
+    FUNDS_TRANSFER = "FUNDS_TRANSFER"; BILL_PAYMENT = "BILL_PAYMENT"; AIRTIME_PURCHASE = "AIRTIME_PURCHASE"
+    MERCHANT_PAYMENT = "MERCHANT_PAYMENT"; LOAN_DISBURSEMENT = "LOAN_DISBURSEMENT"
+    LOAN_REPAYMENT = "LOAN_REPAYMENT"; FEE_CHARGE = "FEE_CHARGE"; TAX_DUTY = "TAX_DUTY"
+    ACCOUNT_OPENING_DEPOSIT = "ACCOUNT_OPENING_DEPOSIT"; CASH_DEPOSIT = "CASH_DEPOSIT"
+    CASH_WITHDRAWAL = "CASH_WITHDRAWAL"; INTEREST_APPLICATION = "INTEREST_APPLICATION"
+    SYSTEM_POSTING = "SYSTEM_POSTING"
+
+class TransactionStatusSchema(str, enum.Enum):
+    PENDING = "PENDING"; PROCESSING = "PROCESSING"; SUCCESSFUL = "SUCCESSFUL"; FAILED = "FAILED"
+    REVERSED = "REVERSED"; PENDING_APPROVAL = "PENDING_APPROVAL"
+    FLAGGED_SUSPICION = "FLAGGED_SUSPICION"; TIMEOUT = "TIMEOUT"; UNKNOWN = "UNKNOWN"
+    AWAITING_RETRY = "AWAITING_RETRY"; PARTIALLY_SUCCESSFUL = "PARTIALLY_SUCCESSFUL"
+
 
 class TransactionBase(BaseModel):
-    transaction_type: str = Field(..., description="e.g., 'FUNDS_TRANSFER', 'BILL_PAYMENT'")
-    channel: TransactionChannelEnum
-    amount: decimal.Decimal = Field(..., gt=0, decimal_places=2) # Ensure amount is positive
-    currency: CurrencyEnum = CurrencyEnum.NGN
+    transaction_type: TransactionTypeCategorySchema
+    channel: TransactionChannelSchema
+    amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
+    currency: CurrencySchema = CurrencySchema.NGN
 
-    debit_account_number: Optional[str] = Field(None, min_length=10, max_length=10, pattern=r"^\d{10}$")
-    # debit_account_name: Optional[str] = None # Usually fetched, not input by user for their own account
-    debit_bank_code: Optional[str] = None # Required for interbank debit if not our bank
+    debit_account_number: Optional[str] = Field(None, max_length=20)
+    debit_bank_code: Optional[str] = Field(None, max_length=10)
 
-    credit_account_number: str = Field(..., min_length=10, max_length=10, pattern=r"^\d{10}$")
-    credit_account_name: Optional[str] = None # Can be fetched via name enquiry for interbank
-    credit_bank_code: str # Required for interbank, can be own bank code for intrabank
+    credit_account_number: str = Field(..., max_length=20)
+    credit_bank_code: str = Field(..., max_length=10) # Required for interbank, can be own bank code for intrabank
+    credit_account_name: Optional[str] = Field(None, max_length=150) # Can be fetched via name enquiry
 
-    narration: str = Field(..., min_length=3, max_length=100)
+    narration: str = Field(..., min_length=3, max_length=255)
+    # initiator_user_id: Optional[str] = None # Set by system from auth context or system process ID
 
 class TransactionCreateRequest(TransactionBase):
-    # customer_id: Optional[int] = None # Who is initiating this? Usually from auth context.
-    # For USSD, this might be passed if session is not tied to authenticated user.
+    # For specific transaction types like bill payments, additional fields would be needed.
+    # This might be better handled by dedicated schemas per transaction_type if they vary significantly.
+    # e.g., BillPaymentDetails, AirtimePurchaseDetails
+    # For now, keeping it generic.
+    # payment_details: Optional[Dict[str, Any]] = None # For type-specific data like biller_id, smartcard_no
     pass
 
 class TransactionInitiateResponse(BaseModel):
-    transaction_id: str # Our internal master transaction ID
-    status: TransactionStatusEnum
+    transaction_id: str
+    status: TransactionStatusSchema
     message: str
     initiated_at: datetime
-    # May include external reference if immediately available (e.g. for direct gateway call)
     external_transaction_id: Optional[str] = None
 
 class TransactionStatusQueryResponse(BaseModel):
     transaction_id: str
-    status: TransactionStatusEnum
-    channel: TransactionChannelEnum
-    amount: decimal.Decimal
-    currency: CurrencyEnum
+    status: TransactionStatusSchema
+    channel: TransactionChannelSchema
+    amount: decimal.Decimal = Field(..., decimal_places=2)
+    currency: CurrencySchema
     narration: str
     initiated_at: datetime
     processed_at: Optional[datetime] = None
@@ -49,118 +84,113 @@ class TransactionStatusQueryResponse(BaseModel):
     response_message: Optional[str] = None
     is_reversal: bool = False
     original_transaction_id: Optional[str] = None
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
+class NIPTransactionDetailsSchema(BaseModel): # For embedding in TransactionDetailResponse
+    nibss_session_id: Optional[str] = None
+    name_enquiry_ref: Optional[str] = None
+    nip_channel_code: Optional[str] = None
+    fee: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    class Config: orm_mode = True; json_encoders = {decimal.Decimal: str}
 
 class TransactionDetailResponse(TransactionStatusQueryResponse):
-    # Includes more details than just status
-    debit_account_number: Optional[str] = None
+    transaction_type: TransactionTypeCategorySchema
     debit_account_name: Optional[str] = None
-    debit_bank_code: Optional[str] = None
-    credit_account_number: Optional[str] = None
-    credit_account_name: Optional[str] = None
-    credit_bank_code: Optional[str] = None
+    # debit_customer_id: Optional[int] = None
+    # credit_customer_id: Optional[int] = None
     system_remarks: Optional[str] = None
+    initiator_user_id: Optional[str] = None
+    approver_user_id: Optional[str] = None
+    fee_amount: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    vat_amount: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    stamp_duty_amount: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    charge_details_json: Optional[Dict[str, Any]] = None
 
-    # NIP specific details if applicable (example)
-    nip_session_id: Optional[str] = None
-
-    # ledger_entries: List[dict] = [] # Could include ledger entry summaries if needed
-
-    class Config:
-        orm_mode = True # Important for converting SQLAlchemy models
-        use_enum_values = True # Serialize enums to their string values
-        json_encoders = {
-            decimal.Decimal: lambda v: str(v) # Ensure Decimals are serialized as strings
-        }
+    nip_details: Optional[NIPTransactionDetailsSchema] = None # Example for NIP
+    # rtgs_details: Optional[RTGSTransactionDetailsSchema] = None # etc.
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 
 class TransactionReversalRequest(BaseModel):
-    original_transaction_id: str
-    reason: str
+    original_transaction_id: str = Field(..., max_length=40)
+    reason: str = Field(..., min_length=5)
 
-class TransactionReversalResponse(TransactionInitiateResponse):
-    # Similar to initiate response, but for the reversal transaction
+class TransactionReversalResponse(TransactionInitiateResponse): # Reversal is also an initiated transaction
     original_transaction_id: str
 
-# --- NIP Specific Schemas ---
+# --- NIP Specific Schemas (as defined before, mostly fine) ---
 class NIPNameEnquiryRequest(BaseModel):
     destination_institution_code: str = Field(..., description="Receiving bank's CBN code")
     account_number: str = Field(..., min_length=10, max_length=10, pattern=r"^\d{10}$")
-    channel_code: str = Field("1", description="NIP Channel Code (e.g., 1 for Internet Banking, 2 for Mobile)") # Default to '1' or make configurable
+    channel_code: str = Field("1", description="NIP Channel Code (e.g., 1 for Internet Banking)")
 
 class NIPNameEnquiryResponse(BaseModel):
     session_id: str
     destination_institution_code: str
     account_number: str
     account_name: str
-    bank_verification_number: Optional[str] = None # BVN
-    kyc_level: Optional[str] = None # e.g. "1", "2", "3"
-    response_code: str # NIBSS response code, e.g., "00" for success
+    bank_verification_number: Optional[str] = None
+    kyc_level: Optional[str] = None
+    response_code: str
 
-class NIPFundsTransferRequest(BaseModel):
-    name_enquiry_ref: str # SessionID from Name Enquiry
+class NIPFundsTransferRequestDetails(BaseModel): # For the actual NIBSS call, distinct from our TransactionCreateRequest
+    name_enquiry_ref: str
     destination_institution_code: str
-    channel_code: str # "1", "2", "7" (Mobile), "12" (USSD) etc.
+    channel_code: str
     beneficiary_account_name: str
     beneficiary_account_number: str
     beneficiary_bvn: Optional[str] = None
     beneficiary_kyc_level: Optional[str] = None
-
     originator_account_name: str
     originator_account_number: str
     originator_bvn: Optional[str] = None
     originator_kyc_level: Optional[str] = None
-
-    transaction_location: Optional[str] = None # e.g., "LAGOS,NG"
+    transaction_location: Optional[str] = None
     narration: str
-    payment_reference: str # Unique reference for this specific FT advice
-    amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
+    payment_reference: str # This is OUR FinancialTransaction.id typically
+    amount: decimal.Decimal = Field(..., gt=0, decimal_places=2) # NIBSS expects kobo; service layer converts
 
-class NIPFundsTransferResponse(BaseModel):
-    session_id: str # NIBSS Session ID for the FT
-    response_code: str # NIBSS response code
-    # Potentially other fields like fee, commission, etc.
+class NIPFundsTransferAdviseResponse(BaseModel): # Renamed from NIPFundsTransferResponse
+    session_id: str
+    response_code: str
+    # Other fields from NIBSS response like fee, etc.
 
 # --- Bulk Payment Schemas ---
 class BulkPaymentItem(BaseModel):
-    credit_account_number: str
-    credit_account_name: Optional[str] = None # Can be auto-fetched if NIP
-    credit_bank_code: str
-    amount: decimal.Decimal
-    narration: str
-    # unique_item_ref: str # Optional reference for this specific item in the batch
+    credit_account_number: str = Field(..., max_length=20)
+    credit_account_name: Optional[str] = Field(None, max_length=150)
+    credit_bank_code: str = Field(..., max_length=10)
+    amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
+    narration: str = Field(..., max_length=100)
+    unique_item_ref: Optional[str] = Field(None, max_length=40) # Optional client ref for this item
 
-class BulkPaymentBatchRequest(BaseModel):
-    batch_name: Optional[str] = None
-    debit_account_number: str # Account to debit for all payments
-    # currency: CurrencyEnum = CurrencyEnum.NGN # Assuming all items in batch have same currency as debit account
+class BulkPaymentBatchCreateRequest(BaseModel): # Renamed
+    batch_name: Optional[str] = Field(None, max_length=100)
+    debit_account_number: str = Field(..., max_length=20)
     items: List[BulkPaymentItem] = Field(..., min_items=1)
 
 class BulkPaymentBatchResponse(BaseModel):
     batch_id: str
-    status: str # e.g., "ACCEPTED_FOR_PROCESSING"
+    status: str
     total_transactions: int
-    total_amount: decimal.Decimal
+    total_amount: decimal.Decimal = Field(..., decimal_places=2)
     submitted_at: datetime
+    class Config: json_encoders = {decimal.Decimal: str}
 
 # --- Standing Order Schemas ---
 class StandingOrderBase(BaseModel):
     customer_id: int
-    debit_account_number: str
-    credit_account_number: str
-    credit_bank_code: Optional[str] = None # Required for interbank
-    amount: decimal.Decimal
-    currency: CurrencyEnum = CurrencyEnum.NGN
-    narration: str
-    frequency: str = Field(..., description="e.g., 'DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'ANNUALLY'")
-    start_date: datetime # Use date if time component not needed, but datetime for precision
+    debit_account_number: str = Field(..., max_length=20)
+    credit_account_number: str = Field(..., max_length=20)
+    credit_bank_code: Optional[str] = Field(None, max_length=10)
+    amount: decimal.Decimal = Field(..., gt=0, decimal_places=2)
+    currency: CurrencySchema = CurrencySchema.NGN
+    narration: str = Field(..., max_length=100)
+    frequency: str = Field(..., description="e.g., 'DAILY', 'WEEKLY', 'MONTHLY'") # Consider Enum
+    start_date: datetime
     end_date: Optional[datetime] = None
 
-class StandingOrderCreate(StandingOrderBase):
+class StandingOrderCreateRequest(StandingOrderBase): # Renamed
     pass
 
 class StandingOrderResponse(StandingOrderBase):
@@ -169,42 +199,38 @@ class StandingOrderResponse(StandingOrderBase):
     last_execution_date: Optional[datetime] = None
     is_active: bool
     failure_count: int
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
-
-class StandingOrderUpdate(BaseModel):
-    amount: Optional[decimal.Decimal] = None
-    narration: Optional[str] = None
-    end_date: Optional[datetime] = None # Allow setting or clearing end date
+class StandingOrderUpdateRequest(BaseModel): # Renamed
+    amount: Optional[decimal.Decimal] = Field(None, gt=0, decimal_places=2)
+    narration: Optional[str] = Field(None, max_length=100)
+    end_date: Optional[datetime] = None
     is_active: Optional[bool] = None
 
-
 # --- Transaction Dispute Schemas ---
-class TransactionDisputeCreate(BaseModel):
-    financial_transaction_id: str
-    # customer_id: int # Usually from auth context
+class TransactionDisputeCreateRequest(BaseModel): # Renamed
+    financial_transaction_id: str = Field(..., max_length=40)
+    customer_id: int # Who is logging the dispute
     dispute_reason: str = Field(..., min_length=10)
 
 class TransactionDisputeResponse(BaseModel):
     id: int
     financial_transaction_id: str
-    # customer_id: int
+    customer_id: int
     dispute_reason: str
     status: str
     logged_at: datetime
     resolved_at: Optional[datetime] = None
     resolution_details: Optional[str] = None
+    class Config: orm_mode = True
 
-    class Config:
-        orm_mode = True
+class TransactionDisputeUpdateRequest(BaseModel):
+    status: str # From a defined set of dispute statuses
+    resolution_details: Optional[str] = None
+    # assigned_to_user_id: Optional[str] = None
+
 
 class PaginatedTransactionResponse(BaseModel):
     items: List[TransactionDetailResponse]
-    total: int
-    page: int
-    size: int
-    class Config:
-        json_encoders = { decimal.Decimal: str }
+    total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str}

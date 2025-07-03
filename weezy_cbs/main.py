@@ -47,22 +47,31 @@ async def startup_event():
 
 # Include routers from each module
 # The prefix here defines the base path for all routes in that router.
-app.include_router(cim_api.router, prefix="/api/v1", tags=["Customer Identity"])
-app.include_router(alm_api.router, prefix="/api/v1", tags=["Accounts & Ledger"])
-app.include_router(loan_api.router, prefix="/api/v1", tags=["Loans"])
-app.include_router(txn_api.router, prefix="/api/v1", tags=["Transactions"])
-app.include_router(card_api.router, prefix="/api/v1", tags=["Cards & Wallets"])
-app.include_router(pay_integ_api.router, prefix="/api/v1", tags=["Payments Integration"])
-app.include_router(dep_coll_api.router, prefix="/api/v1", tags=["Deposits & Collections"])
-app.include_router(comp_rep_api.router, prefix="/api/v1", tags=["Compliance & Reporting"])
-app.include_router(treasury_api.router, prefix="/api/v1", tags=["Treasury & Liquidity"])
-app.include_router(fee_api.router, prefix="/api/v1", tags=["Fees & Charges"])
-app.include_router(core_infra_api.router, prefix="/api/v1", tags=["Core Infrastructure & Config"])
-app.include_router(digital_chan_api.router, prefix="/api/v1", tags=["Digital Channels"])
-app.include_router(crm_api.router, prefix="/api/v1", tags=["CRM & Customer Support"])
-app.include_router(report_api.router, prefix="/api/v1", tags=["Reports & Analytics"])
-app.include_router(third_party_api.router, prefix="/api/v1", tags=["Third-Party Integrations"])
-app.include_router(ai_api.router, prefix="/api/v1", tags=["AI & Automation"])
+
+# Assuming each module's api.py defines a main router variable.
+# If the variable name is consistently 'router':
+app.include_router(cim_api.router, prefix="/api/v1/cim", tags=["Customer Identity"]) # Added specific sub-prefix
+app.include_router(alm_api.router, prefix="/api/v1/alm", tags=["Accounts & Ledger"]) # Added specific sub-prefix
+app.include_router(loan_api.router, prefix="/api/v1/loans", tags=["Loans"]) # Added specific sub-prefix
+app.include_router(txn_api.router, prefix="/api/v1/transactions", tags=["Transactions"]) # Added specific sub-prefix
+app.include_router(card_api.router, prefix="/api/v1/cards-wallets", tags=["Cards & Wallets"]) # Added specific sub-prefix
+app.include_router(pay_integ_api.router, prefix="/api/v1/payments-integration", tags=["Payments Integration"]) # Added specific sub-prefix
+app.include_router(dep_coll_api.router, prefix="/api/v1/deposits-collections", tags=["Deposits & Collections"]) # Added specific sub-prefix
+app.include_router(comp_rep_api.router, prefix="/api/v1/compliance", tags=["Compliance & Reporting"]) # Added specific sub-prefix
+app.include_router(treasury_api.router, prefix="/api/v1/treasury", tags=["Treasury & Liquidity"]) # Added specific sub-prefix
+app.include_router(fee_api.router, prefix="/api/v1/fees", tags=["Fees & Charges"]) # Added specific sub-prefix
+
+# For modules with potentially different main router names:
+# core_infrastructure_config_engine has 'router' for main admin, 'auth_router' for login, 'audit_log_router'
+app.include_router(core_infra_api.auth_router, prefix="/api/v1/auth", tags=["Authentication (Staff)"]) # Staff login
+app.include_router(core_infra_api.router, prefix="/api/v1/core-config", tags=["Core Infrastructure & Config (Admin)"])
+app.include_router(core_infra_api.audit_log_router, prefix="/api/v1/core-config", tags=["Core Infrastructure & Config (Admin)"]) # Audit logs are part of core-config admin
+
+app.include_router(digital_chan_api.digital_channels_api_router, prefix="/api/v1/digital-channels", tags=["Digital Channels"])
+app.include_router(crm_api.crm_api_router, prefix="/api/v1/crm", tags=["CRM & Customer Support"])
+app.include_router(report_api.reports_api_router, prefix="/api/v1/reports-analytics", tags=["Reports & Analytics"])
+app.include_router(third_party_api.integrations_api_router, prefix="/api/v1/integrations", tags=["Third-Party Integrations"])
+app.include_router(ai_api.ai_api_router, prefix="/api/v1/ai-automation", tags=["AI & Automation"])
 
 
 @app.get("/health", tags=["System"])

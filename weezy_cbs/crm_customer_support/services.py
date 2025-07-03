@@ -1,236 +1,402 @@
-# Service layer for CRM & Customer Support Module
-from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_
+import json
+from typing import List, Optional, Type, Dict, Any, Tuple
+from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy import func, or_, and_
+from fastapi import HTTPException, status
+from datetime import datetime, timedelta
+import uuid # For generating unique ticket numbers
+
 from . import models, schemas
-from .models import TicketStatusEnum, TicketPriorityEnum, TicketChannelEnum # Direct enum access
-import uuid
-from datetime import datetime
-
-# Placeholder for other service integrations & data sources
-# from weezy_cbs.customer_identity_management.services import get_customer_by_id, get_customer_by_email_or_phone
-# from weezy_cbs.core_infrastructure_config_engine.services import get_user # For support agents
-# from weezy_cbs.integrations import email_service, sms_service # For notifications
-# from weezy_cbs.shared import exceptions
-
-class NotFoundException(Exception): pass
-class InvalidOperationException(Exception): pass
-
-def _generate_ticket_reference(prefix="WZYSPT"):
-    return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"
-
-# --- Support Ticket Services ---
-def create_support_ticket(db: Session, ticket_in: schemas.SupportTicketCreateRequest, customer_id: Optional[int] = None, user_id_creator: Optional[int] = None) -> models.SupportTicket:
-    # If customer_id is not provided, try to find customer by reporter_email or reporter_phone
-    # if not customer_id and (ticket_in.reporter_email or ticket_in.reporter_phone):
-    #     customer = get_customer_by_email_or_phone(db, email=ticket_in.reporter_email, phone=ticket_in.reporter_phone)
-    #     if customer: customer_id = customer.id
-
-    ticket_ref = _generate_ticket_reference()
-    db_ticket = models.SupportTicket(
-        ticket_reference=ticket_ref,
-        customer_id=customer_id, # May be None if reporter not a known customer
-        # created_by_user_id = user_id_creator, # If logged by staff
-        **ticket_in.dict()
-    )
-    db.add(db_ticket)
-    db.commit()
-    db.refresh(db_ticket)
-
-    # TODO: Send acknowledgement notification to reporter
-    # if ticket_in.reporter_email:
-    #    email_service.send_email(ticket_in.reporter_email, "Support Ticket Created: " + ticket_ref, f"Your ticket '{ticket_in.subject}' has been received...")
-
-    # TODO: Assign to a default queue/agent based on category/channel
-    return db_ticket
-
-def get_support_ticket(db: Session, ticket_id: Optional[int] = None, reference: Optional[str] = None) -> Optional[models.SupportTicket]:
-    if ticket_id:
-        # return db.query(models.SupportTicket).options(joinedload(models.SupportTicket.comments), joinedload(models.SupportTicket.attachments)).filter(models.SupportTicket.id == ticket_id).first()
-        return db.query(models.SupportTicket).filter(models.SupportTicket.id == ticket_id).first() # Simpler for now
-    if reference:
-        return db.query(models.SupportTicket).filter(models.SupportTicket.ticket_reference == reference).first()
-    return None
-
-def update_support_ticket(db: Session, ticket_id: int, update_in: schemas.SupportTicketUpdateRequest, agent_user_id: int) -> models.SupportTicket:
-    ticket = db.query(models.SupportTicket).filter(models.SupportTicket.id == ticket_id).with_for_update().first()
-    if not ticket:
-        raise NotFoundException(f"Support ticket {ticket_id} not found.")
-
-    # Store old status for audit/notification if it changes
-    # old_status = ticket.status
-    update_data = update_in.dict(exclude_unset=True)
-
-    for key, value in update_data.items():
-        setattr(ticket, key, value)
-
-    # If status changed to RESOLVED or CLOSED, set corresponding dates
-    if update_in.status and update_in.status in [TicketStatusEnum.RESOLVED, TicketStatusEnum.CLOSED]:
-        if update_in.status == TicketStatusEnum.RESOLVED and not ticket.resolved_at:
-            ticket.resolved_at = datetime.utcnow()
-        if update_in.status == TicketStatusEnum.CLOSED and not ticket.closed_at:
-            ticket.closed_at = datetime.utcnow()
-            if not ticket.resolved_at: ticket.resolved_at = datetime.utcnow() # Close also implies resolved
-
-    # ticket.last_updated_by_user_id = agent_user_id
-    ticket.updated_at = datetime.utcnow() # Ensure updated_at is set
-
-    db.commit()
-    db.refresh(ticket)
-
-    # TODO: If status changed, notify customer/reporter.
-    # if old_status != ticket.status:
-    #    notify_customer_of_ticket_update(db, ticket, old_status)
-    return ticket
-
-def get_tickets_for_customer(db: Session, customer_id: int, skip: int = 0, limit: int = 20) -> List[models.SupportTicket]:
-    return db.query(models.SupportTicket).filter(models.SupportTicket.customer_id == customer_id).order_by(models.SupportTicket.updated_at.desc()).offset(skip).limit(limit).all()
-
-def get_tickets_assigned_to_agent(db: Session, agent_user_id: int, status: Optional[TicketStatusEnum] = None, skip: int = 0, limit: int = 20) -> List[models.SupportTicket]:
-    query = db.query(models.SupportTicket).filter(models.SupportTicket.assigned_to_user_id == agent_user_id)
-    if status:
-        query = query.filter(models.SupportTicket.status == status)
-    else: # Default to non-closed tickets
-        query = query.filter(models.SupportTicket.status.notin_([TicketStatusEnum.RESOLVED, TicketStatusEnum.CLOSED]))
-    return query.order_by(models.SupportTicket.priority.desc(), models.SupportTicket.updated_at.asc()).offset(skip).limit(limit).all()
+from weezy_cbs.core_infrastructure_config_engine.services import AuditLogService
+# For type hinting and potential direct lookups (use with caution to avoid tight coupling)
+# from weezy_cbs.customer_identity_management.models import Customer as CIMCustomer
+# from weezy_cbs.core_infrastructure_config_engine.models import User as CoreUser
+# from weezy_cbs.digital_channels_modules.models import DigitalUserProfile
 
 
-# --- Ticket Comment Services ---
-def add_ticket_comment(db: Session, comment_in: schemas.TicketCommentCreateRequest, ticket_id: int, commenter_id: int, commenter_type: str, commenter_name: Optional[str]=None) -> models.TicketComment:
-    ticket = get_support_ticket(db, ticket_id=ticket_id)
-    if not ticket:
-        raise NotFoundException(f"Ticket {ticket_id} not found for adding comment.")
+# --- Helper for Ticket Number Generation ---
+def generate_ticket_number() -> str:
+    # Simple example: HD-YYYYMMDD-UUID_SHORT
+    date_str = datetime.utcnow().strftime("%Y%m%d")
+    uuid_short = str(uuid.uuid4()).split('-')[0][:4].upper()
+    return f"HD-{date_str}-{uuid_short}"
 
-    db_comment = models.TicketComment(
-        ticket_id=ticket_id,
-        commenter_type=commenter_type.upper(), # AGENT, CUSTOMER, SYSTEM
-        commenter_name=commenter_name, # Can be agent's name or customer's name
-        **comment_in.dict()
-    )
-    if commenter_type.upper() == "AGENT":
-        # db_comment.user_id = commenter_id
-        pass # In a real app, set user_id
-    elif commenter_type.upper() == "CUSTOMER":
-        # db_comment.customer_id = commenter_id
-        pass # In a real app, set customer_id
-
-    db.add(db_comment)
-
-    # Update ticket's updated_at timestamp and potentially status (e.g., if customer replied, move to PENDING_AGENT_RESPONSE)
-    ticket.updated_at = datetime.utcnow()
-    # if commenter_type.upper() == "CUSTOMER" and ticket.status == TicketStatusEnum.PENDING_CUSTOMER_RESPONSE:
-    #     ticket.status = TicketStatusEnum.PENDING_AGENT_RESPONSE
-    # elif commenter_type.upper() == "AGENT" and ticket.status == TicketStatusEnum.PENDING_AGENT_RESPONSE:
-    #     # If agent is replying to customer, maybe it becomes PENDING_CUSTOMER_RESPONSE again, or stays PENDING_AGENT if more work needed
-    #     pass
-
-    db.commit()
-    db.refresh(db_comment)
-    db.refresh(ticket) # To get updated 'updated_at'
-
-    # TODO: Notify relevant parties about the new comment
-    # if commenter_type.upper() == "AGENT" and not comment_in.is_internal_note:
-    #     notify_customer_of_new_comment(db, ticket, db_comment)
-    # elif commenter_type.upper() == "CUSTOMER" and ticket.assigned_to_user_id:
-    #     notify_agent_of_new_comment(db, ticket, db_comment)
-    return db_comment
-
-# --- Ticket Attachment Services (Conceptual: file storage is external) ---
-def add_ticket_attachment(db: Session, attachment_in: schemas.TicketAttachmentCreateRequest, ticket_id: int, uploader_id: int, uploader_type: str) -> models.TicketAttachment:
-    # Verify ticket exists
-    # ...
-    db_attachment = models.TicketAttachment(
-        ticket_id=ticket_id,
-        # uploaded_by_user_id = uploader_id if uploader_type == "AGENT" else None,
-        # uploaded_by_customer_id = uploader_id if uploader_type == "CUSTOMER" else None,
-        **attachment_in.dict()
-    )
-    db.add(db_attachment)
-    db.commit()
-    db.refresh(db_attachment)
-    return db_attachment
-
-# --- Customer Interaction Log Services ---
-def log_customer_interaction(db: Session, log_in: schemas.CustomerInteractionLogCreateRequest, customer_id: int, user_id_staff: Optional[int] = None) -> models.CustomerInteractionLog:
-    # customer = get_customer_by_id(db, customer_id)
-    # if not customer: raise NotFoundException("Customer not found for interaction logging.")
-
-    db_log = models.CustomerInteractionLog(
-        customer_id=customer_id,
-        # user_id=user_id_staff,
-        **log_in.dict()
-    )
-    db.add(db_log)
-    db.commit()
-    db.refresh(db_log)
-    return db_log
-
-def get_interactions_for_customer(db: Session, customer_id: int, skip: int = 0, limit: int = 20) -> List[models.CustomerInteractionLog]:
-    return db.query(models.CustomerInteractionLog).filter(models.CustomerInteractionLog.customer_id == customer_id).order_by(models.CustomerInteractionLog.interacted_at.desc()).offset(skip).limit(limit).all()
-
-# --- Marketing Campaign Services (Admin/Marketing User) ---
-def create_marketing_campaign(db: Session, campaign_in: schemas.MarketingCampaignCreateRequest, created_by_user_id: int) -> models.MarketingCampaign:
-    db_campaign = models.MarketingCampaign(
-        # created_by_user_id=created_by_user_id,
-        **campaign_in.dict()
-    )
-    db.add(db_campaign)
-    db.commit()
-    db.refresh(db_campaign)
-    return db_campaign
-
-def launch_marketing_campaign(db: Session, campaign_id: int):
-    campaign = db.query(models.MarketingCampaign).filter(models.MarketingCampaign.id == campaign_id).with_for_update().first()
-    if not campaign: raise NotFoundException("Campaign not found.")
-    if campaign.status != "DRAFT": raise InvalidOperationException("Campaign not in DRAFT status.")
-
-    # 1. Identify target audience based on campaign.target_segment_criteria_json
-    # target_customers = find_customers_matching_criteria(db, json.loads(campaign.target_segment_criteria_json))
-    target_customers_mock = [{"id": 1, "email": "cust1@example.com", "phone": "0801"}, {"id": 2, "email": "cust2@example.com", "phone": "0802"}] # Mock
-
-    # 2. For each target customer, log in CampaignAudienceLog and send communication
-    for cust_data in target_customers_mock:
-        audience_log = models.CampaignAudienceLog(
-            campaign_id=campaign.id,
-            customer_id=cust_data["id"],
-            status="TARGETED"
+# --- Base CRM Service (if needed) ---
+class BaseCRMService:
+    def _audit_log(self, db: Session, action: str, entity_type: str, entity_id: Any, summary: str = "", performing_user: str = "SYSTEM"):
+        AuditLogService.create_audit_log_entry(
+            db,
+            username_performing_action=performing_user,
+            action_type=action,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            summary=summary
         )
-        db.add(audience_log)
-        # try:
-            # message_content = render_template(campaign.template_id, customer_data=cust_data)
-            # if campaign.communication_channel == "EMAIL":
-            #     email_service.send_email(cust_data["email"], campaign.campaign_name, message_content)
-            # elif campaign.communication_channel == "SMS":
-            #     sms_service.send_sms(cust_data["phone"], message_content)
-            # audience_log.status = "SENT"
-            # audience_log.sent_at = datetime.utcnow()
-        # except Exception as e:
-            # audience_log.status = "FAILED_SEND"
-            # Log error
-            pass
 
-    campaign.status = "ACTIVE" # Or "SENDING_IN_PROGRESS" if async
-    db.commit()
-    # Potentially return status of launch (e.g. number of messages queued)
+# --- SupportTicket Service ---
+class SupportTicketService(BaseCRMService):
+    def _get_ticket_query(self, db: Session):
+        return db.query(models.SupportTicket).options(
+            selectinload(models.SupportTicket.updates).joinedload(models.TicketUpdate.agent_user_id) # Example of loading related agent for updates
+            # selectinload(models.SupportTicket.customer), # If you have Customer relationship defined and want to load it
+            # selectinload(models.SupportTicket.assigned_agent) # If you have User relationship for assigned_agent
+        )
 
-# --- Ticket Category Services (Admin) ---
-def create_ticket_category(db: Session, category_in: schemas.TicketCategoryCreateRequest) -> models.TicketCategory:
-    db_category = models.TicketCategory(**category_in.dict())
-    db.add(db_category)
-    db.commit()
-    db.refresh(db_category)
-    return db_category
+    def create_ticket(self, db: Session, ticket_in: schemas.SupportTicketCreate, performing_user_id: Optional[int] = None, performing_username: str = "SYSTEM") -> models.SupportTicket:
+        # Validate customer_id (ensure customer exists)
+        # customer = db.query(CIMCustomer).filter(CIMCustomer.id == ticket_in.customer_id).first()
+        # if not customer:
+        #     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Customer with ID {ticket_in.customer_id} not found.")
 
-def get_ticket_categories(db: Session) -> List[models.TicketCategory]:
-    return db.query(models.TicketCategory).order_by(models.TicketCategory.name).all()
+        # Validate digital_user_profile_id if provided
+        # if ticket_in.digital_user_profile_id:
+        #     profile = db.query(DigitalUserProfile).filter(DigitalUserProfile.id == ticket_in.digital_user_profile_id, DigitalUserProfile.customer_id == ticket_in.customer_id).first()
+        #     if not profile:
+        #         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Digital user profile ID does not match customer ID or not found.")
 
-# This module's services would be called by:
-# - Digital Channel APIs (e.g., when a customer submits a support request via mobile app).
-# - Internal Admin/Agent dashboards for managing tickets, campaigns.
-# - Automated processes (e.g., for escalating overdue tickets, sending campaign messages).
-# It requires integration with notification services (Email, SMS, Push) and potentially customer identity for context.
+        ticket_number = generate_ticket_number()
+        while db.query(models.SupportTicket).filter(models.SupportTicket.ticket_number == ticket_number).first():
+            ticket_number = generate_ticket_number() # Ensure uniqueness
 
-# Import any necessary helper for pagination or specific model queries
-from sqlalchemy.orm import joinedload # For eager loading related data if needed.
-# Example: db.query(models.SupportTicket).options(joinedload(models.SupportTicket.customer)).filter(...)
-# This helps avoid N+1 query problems when accessing related objects like ticket.customer.name.
-# For now, most queries are simple. Complex responses (like SupportTicketDetailResponse) would benefit from this.
+        db_ticket = models.SupportTicket(
+            ticket_number=ticket_number,
+            customer_id=ticket_in.customer_id,
+            digital_user_profile_id=ticket_in.digital_user_profile_id,
+            subject=ticket_in.subject,
+            description=ticket_in.description,
+            priority=ticket_in.priority,
+            category=ticket_in.category,
+            channel_of_origin=ticket_in.channel_of_origin or models.TicketChannelEnum.INTERNAL, # Default if not specified
+            status=models.TicketStatusEnum.OPEN # Initial status
+        )
+        db.add(db_ticket)
+        db.commit()
+        db.refresh(db_ticket)
+
+        # Initial description as first update if needed (or handled by client)
+        # self.add_ticket_update(db, ticket_id=db_ticket.id, update_in=schemas.TicketUpdateCreate(update_text=ticket_in.description), author_user_id=performing_user_id, author_username=performing_username, is_initial_desc=True)
+
+        self._audit_log(db, "TICKET_CREATE", "SupportTicket", db_ticket.id, f"Ticket {ticket_number} created.", performing_username)
+        return db_ticket
+
+    def get_ticket_by_id(self, db: Session, ticket_id: int) -> Optional[models.SupportTicket]:
+        return self._get_ticket_query(db).filter(models.SupportTicket.id == ticket_id).first()
+
+    def get_ticket_by_number(self, db: Session, ticket_number: str) -> Optional[models.SupportTicket]:
+        return self._get_ticket_query(db).filter(models.SupportTicket.ticket_number == ticket_number).first()
+
+    def get_tickets_for_customer(self, db: Session, customer_id: int, skip: int = 0, limit: int = 100) -> Tuple[List[models.SupportTicket], int]:
+        query = self._get_ticket_query(db).filter(models.SupportTicket.customer_id == customer_id)
+        total = query.count()
+        tickets = query.order_by(models.SupportTicket.updated_at.desc()).offset(skip).limit(limit).all()
+        return tickets, total
+
+    def search_tickets(
+        self, db: Session,
+        status: Optional[models.TicketStatusEnum] = None,
+        priority: Optional[models.TicketPriorityEnum] = None,
+        category: Optional[models.TicketCategoryEnum] = None,
+        assigned_to_user_id: Optional[int] = None,
+        customer_id: Optional[int] = None,
+        search_term: Optional[str] = None, # Search in subject/description
+        skip: int = 0, limit: int = 100
+    ) -> Tuple[List[models.SupportTicket], int]:
+        query = self._get_ticket_query(db)
+        if status: query = query.filter(models.SupportTicket.status == status)
+        if priority: query = query.filter(models.SupportTicket.priority == priority)
+        if category: query = query.filter(models.SupportTicket.category == category)
+        if assigned_to_user_id: query = query.filter(models.SupportTicket.assigned_to_user_id == assigned_to_user_id)
+        if customer_id: query = query.filter(models.SupportTicket.customer_id == customer_id)
+        if search_term:
+            query = query.filter(
+                or_(
+                    models.SupportTicket.subject.ilike(f"%{search_term}%"),
+                    models.SupportTicket.description.ilike(f"%{search_term}%"),
+                    models.SupportTicket.ticket_number.ilike(f"%{search_term}%")
+                )
+            )
+
+        total = query.count()
+        tickets = query.order_by(models.SupportTicket.updated_at.desc()).offset(skip).limit(limit).all()
+        return tickets, total
+
+    def update_ticket_details(self, db: Session, ticket_id: int, update_in: schemas.SupportTicketUpdateSchema, performing_agent_id: int, performing_username: str) -> Optional[models.SupportTicket]:
+        db_ticket = self.get_ticket_by_id(db, ticket_id)
+        if not db_ticket:
+            return None
+
+        update_data = update_in.dict(exclude_unset=True)
+        changed_fields = []
+
+        for field, value in update_data.items():
+            if hasattr(db_ticket, field) and getattr(db_ticket, field) != value:
+                setattr(db_ticket, field, value)
+                changed_fields.append(field)
+
+        if not changed_fields: # No actual changes
+            return db_ticket
+
+        # Handle status changes specifically for timestamps
+        if "status" in changed_fields:
+            if db_ticket.status == models.TicketStatusEnum.RESOLVED and not db_ticket.resolved_at:
+                db_ticket.resolved_at = datetime.utcnow()
+            elif db_ticket.status == models.TicketStatusEnum.CLOSED and not db_ticket.closed_at:
+                db_ticket.closed_at = datetime.utcnow()
+                if not db_ticket.resolved_at: # If closed directly from non-resolved
+                    db_ticket.resolved_at = datetime.utcnow()
+
+        db_ticket.updated_at = datetime.utcnow() # Explicitly update timestamp
+        db.commit()
+        db.refresh(db_ticket)
+
+        summary = f"Ticket {db_ticket.ticket_number} details updated by agent {performing_username}. Changes: {', '.join(changed_fields)}."
+        self._audit_log(db, "TICKET_UPDATE_DETAILS", "SupportTicket", db_ticket.id, summary, performing_username)
+        return db_ticket
+
+    def add_ticket_update(self, db: Session, ticket_id: int, update_in: schemas.TicketUpdateCreate,
+                          author_agent_id: Optional[int] = None, # Agent adding the update
+                          performing_username: str = "SYSTEM" # Username for audit log
+                          ) -> Optional[models.TicketUpdate]:
+        db_ticket = self.get_ticket_by_id(db, ticket_id)
+        if not db_ticket:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found.")
+
+        # Validate agent_user_id if provided
+        # if author_agent_id:
+        #     agent = db.query(CoreUser).filter(CoreUser.id == author_agent_id).first()
+        #     if not agent:
+        #         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Agent user with ID {author_agent_id} not found.")
+
+
+        db_update = models.TicketUpdate(
+            ticket_id=ticket_id,
+            update_text=update_in.update_text,
+            is_internal_note=update_in.is_internal_note,
+            agent_user_id=author_agent_id,
+            # attachments_json = json.dumps(update_in.attachments_json) if update_in.attachments_json else None
+        )
+        db.add(db_update)
+
+        # Update ticket's main updated_at timestamp
+        db_ticket.updated_at = datetime.utcnow()
+        # If an agent adds a non-internal note, and ticket was PENDING_AGENT, it might change status
+        if author_agent_id and not update_in.is_internal_note and db_ticket.status == models.TicketStatusEnum.PENDING_AGENT:
+            db_ticket.status = models.TicketStatusEnum.PENDING_CUSTOMER # Or IN_PROGRESS if agent is working on it
+
+        db.commit()
+        db.refresh(db_update)
+        db.refresh(db_ticket) # Refresh ticket to get updated 'updated_at'
+
+        action_summary = "internal note added" if update_in.is_internal_note else "reply added"
+        self._audit_log(db, "TICKET_ADD_UPDATE", "SupportTicket", db_ticket.id, f"Ticket {db_ticket.ticket_number}: {action_summary} by {performing_username}.", performing_username)
+        return db_update
+
+# --- CustomerNote Service ---
+class CustomerNoteService(BaseCRMService):
+    def create_customer_note(self, db: Session, note_in: schemas.CustomerNoteCreate, agent_user_id: int, performing_username: str) -> models.CustomerNote:
+        # Validate customer_id and agent_user_id
+        # ... (similar checks as in create_ticket) ...
+
+        db_note = models.CustomerNote(
+            **note_in.dict(),
+            agent_user_id=agent_user_id
+        )
+        db.add(db_note)
+        db.commit()
+        db.refresh(db_note)
+        self._audit_log(db, "CUSTOMER_NOTE_CREATE", "CustomerNote", db_note.id, f"Note created for customer ID {note_in.customer_id}.", performing_username)
+        return db_note
+
+    def get_notes_for_customer(self, db: Session, customer_id: int, skip: int = 0, limit: int = 100) -> Tuple[List[models.CustomerNote], int]:
+        query = db.query(models.CustomerNote).filter(models.CustomerNote.customer_id == customer_id)
+        total = query.count()
+        notes = query.order_by(models.CustomerNote.created_at.desc()).offset(skip).limit(limit).all()
+        return notes, total
+
+    def get_note_by_id(self, db: Session, note_id: int) -> Optional[models.CustomerNote]:
+        return db.query(models.CustomerNote).filter(models.CustomerNote.id == note_id).first()
+
+    def update_customer_note(self, db: Session, note_id: int, note_in: schemas.CustomerNoteBase, agent_user_id: int, performing_username: str) -> Optional[models.CustomerNote]:
+        db_note = self.get_note_by_id(db, note_id)
+        if not db_note: return None
+        # Optional: Check if agent_user_id matches db_note.agent_user_id for permission
+
+        db_note.note_text = note_in.note_text
+        db_note.category = note_in.category
+        db_note.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_note)
+        self._audit_log(db, "CUSTOMER_NOTE_UPDATE", "CustomerNote", db_note.id, f"Note ID {db_note.id} updated.", performing_username)
+        return db_note
+
+    def delete_customer_note(self, db: Session, note_id: int, agent_user_id: int, performing_username: str) -> bool:
+        db_note = self.get_note_by_id(db, note_id)
+        if not db_note: return False
+        # Optional: Check ownership or permissions
+
+        customer_id = db_note.customer_id # For audit log
+        db.delete(db_note)
+        db.commit()
+        self._audit_log(db, "CUSTOMER_NOTE_DELETE", "CustomerNote", note_id, f"Note ID {note_id} for customer ID {customer_id} deleted.", performing_username)
+        return True
+
+
+# --- FAQItem Service ---
+class FAQItemService(BaseCRMService):
+    def create_faq_item(self, db: Session, faq_in: schemas.FAQItemCreate, created_by_user_id: int, performing_username: str) -> models.FAQItem:
+        db_faq = models.FAQItem(
+            **faq_in.dict(exclude_unset=True, exclude={"tags_json"}), # Pydantic handles tags_json conversion
+            tags_json=json.dumps(faq_in.tags_json) if faq_in.tags_json else None,
+            created_by_user_id=created_by_user_id,
+            updated_by_user_id=created_by_user_id
+        )
+        db.add(db_faq)
+        db.commit()
+        db.refresh(db_faq)
+        self._audit_log(db, "FAQ_CREATE", "FAQItem", db_faq.id, f"FAQ '{db_faq.question[:30]}...' created.", performing_username)
+        return db_faq
+
+    def get_faq_item_by_id(self, db: Session, faq_id: int) -> Optional[models.FAQItem]:
+        return db.query(models.FAQItem).filter(models.FAQItem.id == faq_id).first()
+
+    def update_faq_item(self, db: Session, faq_id: int, faq_in: schemas.FAQItemUpdateSchema, updated_by_user_id: int, performing_username: str) -> Optional[models.FAQItem]:
+        db_faq = self.get_faq_item_by_id(db, faq_id)
+        if not db_faq: return None
+
+        update_data = faq_in.dict(exclude_unset=True)
+        if "tags_json" in update_data and update_data["tags_json"] is not None:
+            db_faq.tags_json = json.dumps(update_data.pop("tags_json"))
+
+        for field, value in update_data.items():
+            setattr(db_faq, field, value)
+
+        db_faq.updated_by_user_id = updated_by_user_id
+        db_faq.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_faq)
+        self._audit_log(db, "FAQ_UPDATE", "FAQItem", db_faq.id, f"FAQ ID {db_faq.id} updated.", performing_username)
+        return db_faq
+
+    def delete_faq_item(self, db: Session, faq_id: int, performing_username: str) -> bool:
+        db_faq = self.get_faq_item_by_id(db, faq_id)
+        if not db_faq: return False
+        db.delete(db_faq)
+        db.commit()
+        self._audit_log(db, "FAQ_DELETE", "FAQItem", faq_id, f"FAQ ID {faq_id} deleted.", performing_username)
+        return True
+
+    def search_faq_items(self, db: Session, query: Optional[str] = None, category: Optional[str] = None, published_only: bool = True, skip: int = 0, limit: int = 100) -> Tuple[List[models.FAQItem], int]:
+        q = db.query(models.FAQItem)
+        if published_only:
+            q = q.filter(models.FAQItem.is_published == True)
+        if category:
+            q = q.filter(models.FAQItem.category.ilike(f"%{category}%"))
+        if query:
+            # Basic search in question, answer, and tags (if stored as searchable text or after JSON parsing in DB if supported)
+            # For JSON search, specific DB functions are needed (e.g., for PostgreSQL jsonb_path_exists or @@)
+            # Simple ilike on tags_json might work if tags are simple strings without too much JSON noise.
+            search_filter = or_(
+                models.FAQItem.question.ilike(f"%{query}%"),
+                models.FAQItem.answer.ilike(f"%{query}%"),
+                models.FAQItem.tags_json.ilike(f"%{query}%")
+            )
+            q = q.filter(search_filter)
+
+        total = q.count()
+        faqs = q.order_by(models.FAQItem.category, models.FAQItem.question).offset(skip).limit(limit).all()
+        return faqs, total
+
+    def increment_faq_view_count(self, db: Session, faq_id: int) -> Optional[models.FAQItem]:
+        db_faq = self.get_faq_item_by_id(db, faq_id)
+        if db_faq:
+            db_faq.view_count = (db_faq.view_count or 0) + 1
+            db.commit()
+            db.refresh(db_faq)
+        return db_faq
+
+# --- Campaign Service (Conceptual for execution) ---
+class CampaignService(BaseCRMService):
+    def create_campaign(self, db: Session, campaign_in: schemas.CampaignCreate, created_by_user_id: int, performing_username: str) -> models.Campaign:
+        db_campaign = models.Campaign(
+            **campaign_in.dict(exclude_unset=True, exclude={"target_audience_rules_json"}),
+            target_audience_rules_json=json.dumps(campaign_in.target_audience_rules_json) if campaign_in.target_audience_rules_json else None,
+            created_by_user_id=created_by_user_id
+        )
+        db.add(db_campaign)
+        db.commit()
+        db.refresh(db_campaign)
+        self._audit_log(db, "CAMPAIGN_CREATE", "Campaign", db_campaign.id, f"Campaign '{db_campaign.campaign_name}' created.", performing_username)
+        return db_campaign
+
+    def get_campaign_by_id(self, db: Session, campaign_id: int) -> Optional[models.Campaign]:
+        return db.query(models.Campaign).options(selectinload(models.Campaign.logs)).filter(models.Campaign.id == campaign_id).first()
+
+    def update_campaign(self, db: Session, campaign_id: int, campaign_in: schemas.CampaignUpdateSchema, performing_username: str) -> Optional[models.Campaign]:
+        db_campaign = self.get_campaign_by_id(db, campaign_id)
+        if not db_campaign: return None
+        if db_campaign.status not in [models.CampaignStatusEnum.DRAFT, models.CampaignStatusEnum.SCHEDULED, models.CampaignStatusEnum.PAUSED]: # Only allow updates in certain states
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Campaign in status {db_campaign.status.value} cannot be updated.")
+
+        update_data = campaign_in.dict(exclude_unset=True)
+        if "target_audience_rules_json" in update_data and update_data["target_audience_rules_json"] is not None:
+            db_campaign.target_audience_rules_json = json.dumps(update_data.pop("target_audience_rules_json"))
+
+        for field, value in update_data.items():
+            setattr(db_campaign, field, value)
+
+        db_campaign.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_campaign)
+        self._audit_log(db, "CAMPAIGN_UPDATE", "Campaign", db_campaign.id, f"Campaign '{db_campaign.campaign_name}' updated.", performing_username)
+        return db_campaign
+
+    def get_campaigns(self, db: Session, skip: int = 0, limit: int = 100) -> Tuple[List[models.Campaign], int]:
+        query = db.query(models.Campaign)
+        total = query.count()
+        campaigns = query.order_by(models.Campaign.created_at.desc()).offset(skip).limit(limit).all()
+        return campaigns, total
+
+    def get_campaign_logs(self, db: Session, campaign_id: int, skip: int = 0, limit: int = 100) -> Tuple[List[models.CampaignLog], int]:
+        query = db.query(models.CampaignLog).filter(models.CampaignLog.campaign_id == campaign_id)
+        total = query.count()
+        logs = query.order_by(models.CampaignLog.processed_at.desc()).offset(skip).limit(limit).all()
+        return logs, total
+
+    def launch_campaign(self, db: Session, campaign_id: int, performing_username: str) -> bool:
+        """
+        Conceptual: Changes campaign status to ACTIVE/SCHEDULED.
+        Actual execution (finding audience, sending messages) would be a background task.
+        """
+        db_campaign = self.get_campaign_by_id(db, campaign_id)
+        if not db_campaign:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+        if db_campaign.status not in [models.CampaignStatusEnum.DRAFT, models.CampaignStatusEnum.SCHEDULED, models.CampaignStatusEnum.PAUSED]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Campaign cannot be launched from status {db_campaign.status.value}.")
+
+        # If scheduled and start_date is future, status becomes SCHEDULED. If start_date is now/past, becomes ACTIVE.
+        if db_campaign.start_date and db_campaign.start_date > datetime.utcnow():
+            db_campaign.status = models.CampaignStatusEnum.SCHEDULED
+        else:
+            db_campaign.status = models.CampaignStatusEnum.ACTIVE
+            # Placeholder: Trigger background task to process audience and send messages
+            # self._process_and_send_campaign_messages(db, db_campaign)
+            print(f"SIMULATING: Campaign '{db_campaign.campaign_name}' (ID: {db_campaign.id}) messages would be processed and sent now.")
+            # This would involve:
+            # 1. Parsing db_campaign.target_audience_rules_json
+            # 2. Querying Customer table based on these rules (e.g. using a generic customer search service)
+            # 3. For each targeted customer:
+            #    a. Create a CampaignLog entry (status PENDING_SEND or TARGETED)
+            #    b. (Async) Send message via NotificationService (digital_channels) using campaign_channel and message content.
+            #    c. Update CampaignLog status based on send attempt (SENT, FAILED).
+
+        db.commit()
+        db.refresh(db_campaign)
+        self._audit_log(db, "CAMPAIGN_LAUNCH", "Campaign", db_campaign.id, f"Campaign '{db_campaign.campaign_name}' status set to {db_campaign.status.value}.", performing_username)
+        return True
+
+
+# Instantiate services
+support_ticket_service = SupportTicketService()
+customer_note_service = CustomerNoteService()
+faq_item_service = FAQItemService()
+campaign_service = CampaignService()
