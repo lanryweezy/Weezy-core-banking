@@ -339,3 +339,127 @@ def get_customer_360_profile(db: Session, customer_id: int) -> Optional[schemas.
     # customer_profile_response.overall_kyc_level_met = overall_kyc_level
 
     return customer_profile_response
+
+async def get_staff_customer_360_view(db: Session, customer_id: int) -> Optional[schemas.StaffCustomer360Response]:
+    """
+    Aggregates comprehensive customer information for a staff-facing 360-degree view.
+    This is a conceptual implementation and uses mock data for cross-module calls.
+    """
+    # 1. Fetch Core Customer Details
+    # customer_orm = get_customer(db, customer_id) # Uses existing service
+    # For mock, let's assume we get a customer object
+    customer_orm = db.query(models.Customer).options(
+        joinedload(models.Customer.documents),
+        # joinedload(models.Customer.kyc_audit_logs).raiseload('*') # Example of controlling load depth
+    ).filter(models.Customer.id == customer_id).first()
+
+    if not customer_orm:
+        raise NotFoundException(f"Customer with ID {customer_id} not found.")
+
+    full_name = f"{customer_orm.first_name} {customer_orm.last_name}" if customer_orm.customer_type == models.CustomerTypeEnum.INDIVIDUAL else customer_orm.company_name
+
+    # 2. KYC/AML Status & Documents
+    overall_kyc_status = "Partially Verified" # Placeholder
+    if customer_orm.is_verified_bvn and customer_orm.is_verified_nin and customer_orm.is_verified_identity_document and customer_orm.is_verified_address:
+        overall_kyc_status = "Fully Verified"
+    elif customer_orm.is_verified_bvn or customer_orm.is_verified_nin:
+        overall_kyc_status = "Basic Verification Met"
+
+    key_documents_summary: List[schemas.StaffViewKYCDocumentSummarySchema] = []
+    for doc in customer_orm.documents[:3]: # Show max 3 key docs summary
+        key_documents_summary.append(schemas.StaffViewKYCDocumentSummarySchema(
+            document_type=doc.document_type,
+            status="Verified" if doc.is_verified else "Pending" if doc.verified_at is None else "Rejected", # Simplified status
+            expiry_date=doc.expiry_date,
+            document_url=doc.document_url # In real app, consider if staff should see direct URL
+        ))
+
+    # last_kyc_review_date: Conceptual - query KYCAuditLog for latest relevant event
+    last_kyc_review = db.query(models.KYCAuditLog.timestamp)\
+        .filter(models.KYCAuditLog.customer_id == customer_id)\
+        .order_by(models.KYCAuditLog.timestamp.desc())\
+        .first()
+    last_kyc_review_date_val = last_kyc_review[0].date() if last_kyc_review else None
+
+
+    # 3. Financial Summary & Linked Accounts (MOCK DATA)
+    # Conceptual: Call accounts_ledger_management.services.account_service
+    # accounts_data, total_deposit_bal = alm_account_service.get_customer_account_financial_summary(db, customer_id)
+    mock_accounts_summary: List[schemas.StaffViewAccountSummarySchema] = [
+        schemas.StaffViewAccountSummarySchema(account_id=101, account_number_masked="******7890", account_type="SAVINGS", product_name="Regular Savings", currency="NGN", available_balance=120500.75, ledger_balance=120500.75, status="ACTIVE"),
+        schemas.StaffViewAccountSummarySchema(account_id=102, account_number_masked="******1234", account_type="CURRENT", product_name="Business Current", currency="NGN", available_balance=550000.00, ledger_balance=550000.00, status="ACTIVE", lien_amount=50000.00),
+        schemas.StaffViewAccountSummarySchema(account_id=103, account_number_masked="******5555", account_type="DOMICILIARY", product_name="USD Domiciliary", currency="USD", available_balance=1500.00, ledger_balance=1500.00, status="ACTIVE"),
+    ]
+    total_deposit_balance_ngn_equivalent_val = 120500.75 + 550000.00 + (1500.00 * 1400) # Mock conversion
+
+    # 4. Recent Transaction Activity (MOCK DATA)
+    # Conceptual: Call transaction_management.services.transaction_service
+    # recent_txns_data = tm_transaction_service.get_recent_transactions_for_customer(db, customer_id, limit=5)
+    mock_recent_transactions: List[schemas.StaffViewTransactionSummarySchema] = [
+        schemas.StaffViewTransactionSummarySchema(transaction_id="TXN001", date=datetime.utcnow()-timedelta(days=1), description="DSTV Subscription", amount=-15000.00, currency="NGN", type_category="BILL_PAYMENT", channel="MOBILE_APP", status="SUCCESSFUL"),
+        schemas.StaffViewTransactionSummarySchema(transaction_id="TXN002", date=datetime.utcnow()-timedelta(days=2), description="Salary - ACME Corp", amount=350000.00, currency="NGN", type_category="FUNDS_TRANSFER", channel="NIP", status="SUCCESSFUL"),
+    ]
+
+    # 5. Loan Portfolio Summary (MOCK DATA)
+    # Conceptual: Call loan_management_module.services.loan_account_service
+    # active_loans_data, total_loan_exposure = lms_loan_service.get_customer_loan_summary(db, customer_id)
+    mock_active_loans: List[schemas.StaffViewLoanSummarySchema] = []
+    total_loan_exposure_ngn_equivalent_val = 0.0
+    if customer_id % 3 == 0: # Randomly give some customers a mock loan
+        mock_active_loans.append(
+            schemas.StaffViewLoanSummarySchema(loan_account_id=201, loan_account_number="LN000123", product_name="Personal Quick Loan", disbursed_amount=200000.00, total_outstanding=150000.00, currency="NGN", status="ACTIVE", next_repayment_date=(datetime.utcnow()+timedelta(days=20)).date(), next_repayment_amount=25000.00, days_past_due=0)
+        )
+        total_loan_exposure_ngn_equivalent_val = 150000.00
+
+    # 6. CRM & Support Interaction History (MOCK DATA)
+    # Conceptual: Call crm_customer_support.services.support_ticket_service and customer_note_service
+    # recent_tickets_data = crm_ticket_service.get_tickets_for_customer(db, customer_id, limit=3, sort_by_updated=True)
+    # important_notes_data = crm_note_service.get_important_notes_for_customer(db, customer_id, limit=3)
+    mock_recent_tickets: List[schemas.StaffViewSupportTicketSummarySchema] = [
+        schemas.StaffViewSupportTicketSummarySchema(ticket_id=301, ticket_number="HD-20240115-001", subject="Card Activation Issue", status="PENDING_AGENT", priority="HIGH", created_at=datetime.utcnow()-timedelta(days=3), assigned_agent_name="Support Agent A"),
+    ]
+    mock_important_notes: List[schemas.StaffViewCustomerNoteSummarySchema] = [
+        schemas.StaffViewCustomerNoteSummarySchema(note_id=401, category="Feedback", note_snippet="Customer called to appreciate mobile app...", created_at=datetime.utcnow()-timedelta(days=10), agent_name="Agent B"),
+    ]
+
+    # 7. Digital Channel Engagement (MOCK DATA)
+    # Conceptual: Call digital_channels_modules.services.digital_user_profile_service
+    # digital_profile_data = dc_profile_service.get_profile_summary_by_customer_id(db, customer_id)
+    mock_digital_profile: Optional[schemas.StaffViewDigitalProfileSummarySchema] = None
+    if customer_orm.email: # Assume digital profile if email exists
+        mock_digital_profile = schemas.StaffViewDigitalProfileSummarySchema(
+            username=customer_orm.email, status="Active",
+            last_login_at=customer_orm.updated_at - timedelta(hours=random.randint(1,72)), # Mock last login
+            last_login_channel="MOBILE_APP",
+            is_verified_email=True, is_verified_phone=customer_orm.is_verified_bvn # Assume phone verified if BVN verified
+        )
+
+    # Assemble response
+    response = schemas.StaffCustomer360Response(
+        customer_id=customer_orm.id,
+        full_name=full_name,
+        customer_type=customer_orm.customer_type.value,
+        bvn=customer_orm.bvn,
+        nin=customer_orm.nin,
+        primary_phone=customer_orm.phone_number,
+        primary_email=customer_orm.email,
+        date_onboarded=customer_orm.created_at.date(),
+        relationship_manager_name=None, # Placeholder
+        overall_kyc_status=overall_kyc_status,
+        account_tier=customer_orm.account_tier.value,
+        is_pep=customer_orm.is_pep,
+        sanction_status="Clear", # Placeholder
+        last_kyc_review_date=last_kyc_review_date_val,
+        key_documents=key_documents_summary,
+        total_deposit_balance_ngn_equivalent=total_deposit_balance_ngn_equivalent_val,
+        total_loan_exposure_ngn_equivalent=total_loan_exposure_ngn_equivalent_val,
+        accounts=mock_accounts_summary,
+        recent_transactions=mock_recent_transactions,
+        active_loans=mock_active_loans,
+        recent_support_tickets=mock_recent_tickets,
+        important_customer_notes=mock_important_notes,
+        digital_profile=mock_digital_profile,
+        active_alerts_count=0, # Placeholder
+        key_flags=[] # Placeholder
+    )
+    return response

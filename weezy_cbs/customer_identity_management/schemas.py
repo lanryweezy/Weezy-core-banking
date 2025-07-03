@@ -225,3 +225,107 @@ class PaginatedCustomerResponse(BaseModel):
     total: int
     page: int
     size: int
+
+# --- Helper Schemas for StaffCustomer360Response ---
+
+class StaffViewKYCDocumentSummarySchema(BaseModel):
+    document_type: str
+    status: str # e.g., "Verified", "Pending", "Rejected"
+    expiry_date: Optional[date] = None
+    document_url: Optional[str] = None # Optional link, Pydantic HttpUrl can be used if validated
+
+class StaffViewAccountSummarySchema(BaseModel):
+    account_id: int
+    account_number_masked: str
+    account_type: str # e.g., "SAVINGS", "CURRENT"
+    product_name: Optional[str] = None
+    currency: str # e.g., "NGN", "USD"
+    available_balance: float
+    ledger_balance: float
+    status: str # e.g., "ACTIVE", "DORMANT"
+    lien_amount: Optional[float] = 0.0
+
+class StaffViewTransactionSummarySchema(BaseModel):
+    transaction_id: str
+    date: datetime
+    description: str
+    amount: float
+    currency: str
+    type_category: str # e.g., "FUNDS_TRANSFER", "BILL_PAYMENT"
+    channel: str
+    status: str
+
+class StaffViewLoanSummarySchema(BaseModel):
+    loan_account_id: int
+    loan_account_number: str
+    product_name: str
+    disbursed_amount: float
+    total_outstanding: float
+    currency: str
+    status: str # e.g., "ACTIVE", "OVERDUE"
+    next_repayment_date: Optional[date] = None
+    next_repayment_amount: Optional[float] = None
+    days_past_due: Optional[int] = None
+
+class StaffViewSupportTicketSummarySchema(BaseModel):
+    ticket_id: int
+    ticket_number: str
+    subject: str
+    status: str # e.g., "OPEN", "RESOLVED"
+    priority: str
+    created_at: datetime
+    assigned_agent_name: Optional[str] = None
+
+class StaffViewCustomerNoteSummarySchema(BaseModel):
+    note_id: int
+    category: Optional[str] = None
+    note_snippet: str
+    created_at: datetime
+    agent_name: Optional[str] = None
+
+class StaffViewDigitalProfileSummarySchema(BaseModel):
+    username: str
+    status: str # e.g., "Active", "Locked"
+    last_login_at: Optional[datetime] = None
+    last_login_channel: Optional[str] = None
+    is_verified_email: bool
+    is_verified_phone: bool
+
+# --- Main StaffCustomer360Response Schema ---
+
+class StaffCustomer360Response(BaseModel):
+    customer_id: int
+    full_name: str
+    customer_type: str
+    bvn: Optional[str] = None
+    nin: Optional[str] = None
+    primary_phone: Optional[str] = None
+    primary_email: Optional[EmailStr] = None
+    date_onboarded: date
+    relationship_manager_name: Optional[str] = None
+
+    overall_kyc_status: str
+    account_tier: str
+    is_pep: bool
+    sanction_status: str
+    last_kyc_review_date: Optional[date] = None
+    key_documents: List[StaffViewKYCDocumentSummarySchema] = []
+
+    total_deposit_balance_ngn_equivalent: Optional[float] = None
+    total_loan_exposure_ngn_equivalent: Optional[float] = None
+
+    accounts: List[StaffViewAccountSummarySchema] = []
+    recent_transactions: List[StaffViewTransactionSummarySchema] = []
+    active_loans: List[StaffViewLoanSummarySchema] = []
+
+    recent_support_tickets: List[StaffViewSupportTicketSummarySchema] = []
+    important_customer_notes: List[StaffViewCustomerNoteSummarySchema] = []
+
+    digital_profile: Optional[StaffViewDigitalProfileSummarySchema] = None
+
+    active_alerts_count: int = 0
+    key_flags: List[str] = []
+
+    class Config:
+        orm_mode = True
+        use_enum_values = True

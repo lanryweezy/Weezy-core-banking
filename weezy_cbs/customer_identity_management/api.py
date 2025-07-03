@@ -5,30 +5,14 @@ from typing import List, Optional
 
 from . import services, schemas, models
 # Assuming a get_db dependency is defined in weezy_cbs.database
-# from weezy_cbs.database import get_db
-# from weezy_cbs.auth.dependencies import get_current_active_user, get_current_active_admin_user # For auth
+from weezy_cbs.database import get_db # Use the actual get_db
+# Import staff authentication dependency
+from weezy_cbs.core_infrastructure_config_engine.api import get_current_active_superuser
+from weezy_cbs.core_infrastructure_config_engine.models import User as CoreUser # For type hint
 
-# For now, let's define a placeholder get_db.
-# This should be properly set up with SQLAlchemy session management.
-def get_db_placeholder():
-    # This is a placeholder. In a real FastAPI app, this would yield a SQLAlchemy Session.
-    # from weezy_cbs.database import SessionLocal # Assuming SessionLocal is defined in database.py
-    # db = SessionLocal()
-    # try:
-    #     yield db
-    # finally:
-    #     db.close()
-    # For mock purposes where services might not use db:
-    yield None # Returning None will cause errors if services.py actually uses the db session.
-
-get_db = get_db_placeholder # Assign placeholder
-
-# Placeholder for current user (replace with actual auth dependency)
-def get_current_user_placeholder():
-    return {"id": "user_SYSTEM", "username": "system", "roles": ["admin"]} # Mock admin user
 
 router = APIRouter(
-    prefix="/customer-identity", # Consistent with original
+    prefix="/customer-identity",
     tags=["Customer & Identity Management"],
     responses={404: {"description": "Not found"}},
 )
@@ -281,4 +265,34 @@ def update_customer_overall_kyc_status( # Renamed from update_customer_kyc_detai
 # without a live DB connection. Set to `db is None:` to enforce DB session.
 # Import `func` if doing counts directly in API: from sqlalchemy import func
 # Import `date` from datetime for date type hints
-from datetime import date
+from datetime import date, datetime # Ensure datetime is imported for the new endpoint
+import random # For mock data in service
+import asyncio # For async service method
+
+# ... (other imports remain the same) ...
+
+# (Existing code for router and other endpoints)
+# ...
+
+@router.get("/customers/{customer_id}/staff-360-view", response_model=schemas.StaffCustomer360Response)
+async def get_staff_customer_360_view_endpoint(
+    customer_id: int,
+    db: Session = Depends(get_db),
+    current_staff_user: CoreUser = Depends(get_current_active_superuser) # Staff authentication
+):
+    """
+    Retrieve a comprehensive 360-degree view of a customer for staff members.
+    Requires staff authentication.
+    """
+    # The service method might raise NotFoundException if customer_id is invalid
+    # which FastAPI will convert to a 404 response if not caught and re-raised.
+    try:
+        profile_360 = await services.get_staff_customer_360_view(db, customer_id=customer_id)
+        if profile_360 is None: # Should be caught by NotFoundException in service ideally
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found or 360 view could not be generated.")
+        return profile_360
+    except services.NotFoundException as e: # Catch specific exception from service
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        # Log actual error e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred while generating customer 360 view: {str(e)}")
