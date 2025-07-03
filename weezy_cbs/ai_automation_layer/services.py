@@ -190,13 +190,139 @@ class AIAgentConfigService(BaseAIService):
         self._audit_log(db, "AI_AGENT_CONFIG_CREATE", "AIAgentConfig", db_agent_cfg.id, f"AI Agent Config '{db_agent_cfg.agent_name}' created.", username)
         return db_agent_cfg
 
-    # ... other CRUD methods for AIAgentConfig (get_by_id, get_all, update, delete) ...
+    def get_agent_config_by_id(self, db: Session, config_id: int) -> Optional[models.AIAgentConfig]:
+        return db.query(models.AIAgentConfig).filter(models.AIAgentConfig.id == config_id).first()
+
+    def get_agent_config_by_name(self, db: Session, agent_name: str) -> Optional[models.AIAgentConfig]:
+        return db.query(models.AIAgentConfig).filter(models.AIAgentConfig.agent_name == agent_name).first()
+
+    def get_all_agent_configs(self, db: Session, skip: int = 0, limit: int = 100) -> Tuple[List[models.AIAgentConfig], int]:
+        query = db.query(models.AIAgentConfig)
+        total = query.count()
+        configs = query.order_by(models.AIAgentConfig.agent_name).offset(skip).limit(limit).all()
+        return configs, total
+
+    def update_agent_config(self, db: Session, config_id: int, agent_upd: schemas.AIAgentConfigUpdate, username: str) -> Optional[models.AIAgentConfig]:
+        db_agent_cfg = self.get_agent_config_by_id(db, config_id)
+        if not db_agent_cfg: return None
+
+        update_data = agent_upd.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            if value is not None:
+                if field.endswith("_json") and isinstance(value, (dict, list)):
+                    # Handle Pydantic models within the list/dict correctly
+                    if field == "llm_config_json" and isinstance(value, schemas.LLMConfigSchema):
+                         setattr(db_agent_cfg, field, json.dumps(value.dict()))
+                    elif field == "tools_config_json" and isinstance(value, list):
+                         setattr(db_agent_cfg, field, json.dumps([t.dict() if isinstance(t, schemas.ToolConfigSchema) else t for t in value]))
+                    else:
+                         setattr(db_agent_cfg, field, json.dumps(value))
+                else:
+                    setattr(db_agent_cfg, field, value)
+
+        db_agent_cfg.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_agent_cfg)
+        self._audit_log(db, "AI_AGENT_CONFIG_UPDATE", "AIAgentConfig", db_agent_cfg.id, f"AI Agent Config '{db_agent_cfg.agent_name}' updated.", username)
+        return db_agent_cfg
+
+    def delete_agent_config(self, db: Session, config_id: int, username: str) -> bool:
+        db_agent_cfg = self.get_agent_config_by_id(db, config_id)
+        if not db_agent_cfg: return False
+        self._audit_log(db, "AI_AGENT_CONFIG_DELETE", "AIAgentConfig", db_agent_cfg.id, f"AI Agent Config '{db_agent_cfg.agent_name}' deleted.", username)
+        db.delete(db_agent_cfg)
+        db.commit()
+        return True
 
 # --- AutomatedRule Service ---
 class AutomatedRuleService(BaseAIService):
-    # CRUD for AutomatedRule
-    # Conceptual: evaluate_rule(db, rule_id, context_data) -> bool or actions
-    pass
+    def create_rule(self, db: Session, rule_in: schemas.AutomatedRuleCreate, user_id: Optional[int], username: str) -> models.AutomatedRule:
+        if db.query(models.AutomatedRule).filter(models.AutomatedRule.rule_name == rule_in.rule_name).first():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Automated Rule with name '{rule_in.rule_name}' already exists.")
+
+        db_rule = models.AutomatedRule(
+            rule_name=rule_in.rule_name,
+            description=rule_in.description,
+            module_area=rule_in.module_area,
+            conditions_json=json.dumps([c.dict() for c in rule_in.conditions_json]),
+            actions_json=json.dumps([a.dict() for a in rule_in.actions_json]),
+            ai_model_suggestion_id=rule_in.ai_model_suggestion_id,
+            ai_confidence_score=rule_in.ai_confidence_score,
+            priority=rule_in.priority,
+            status=rule_in.status,
+            version=rule_in.version,
+            # created_by_user_id=user_id # If tracking creator
+        )
+        db.add(db_rule)
+        db.commit()
+        db.refresh(db_rule)
+        self._audit_log(db, "AUTOMATED_RULE_CREATE", "AutomatedRule", db_rule.id, f"Automated Rule '{db_rule.rule_name}' created.", username)
+        return db_rule
+
+    def get_rule_by_id(self, db: Session, rule_id: int) -> Optional[models.AutomatedRule]:
+        return db.query(models.AutomatedRule).filter(models.AutomatedRule.id == rule_id).first()
+
+    def get_rules_by_module_area(self, db: Session, module_area: str, active_only: bool = True) -> List[models.AutomatedRule]:
+        query = db.query(models.AutomatedRule).filter(models.AutomatedRule.module_area == module_area)
+        if active_only:
+            query = query.filter(models.AutomatedRule.status == "ACTIVE") # Assuming "ACTIVE" is a string status
+        return query.order_by(models.AutomatedRule.priority).all()
+
+    def get_all_rules(self, db: Session, skip: int = 0, limit: int = 100) -> Tuple[List[models.AutomatedRule], int]:
+        query = db.query(models.AutomatedRule)
+        total = query.count()
+        rules = query.order_by(models.AutomatedRule.module_area, models.AutomatedRule.rule_name).offset(skip).limit(limit).all()
+        return rules, total
+
+    def update_rule(self, db: Session, rule_id: int, rule_upd: schemas.AutomatedRuleUpdate, username: str) -> Optional[models.AutomatedRule]:
+        db_rule = self.get_rule_by_id(db, rule_id)
+        if not db_rule: return None
+
+        update_data = rule_upd.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            if value is not None:
+                if field.endswith("_json") and isinstance(value, list): # conditions_json, actions_json
+                     setattr(db_rule, field, json.dumps([item.dict() if hasattr(item, 'dict') else item for item in value]))
+                else:
+                    setattr(db_rule, field, value)
+
+        db_rule.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(db_rule)
+        self._audit_log(db, "AUTOMATED_RULE_UPDATE", "AutomatedRule", db_rule.id, f"Automated Rule '{db_rule.rule_name}' updated.", username)
+        return db_rule
+
+    def delete_rule(self, db: Session, rule_id: int, username: str) -> bool:
+        db_rule = self.get_rule_by_id(db, rule_id)
+        if not db_rule: return False
+        self._audit_log(db, "AUTOMATED_RULE_DELETE", "AutomatedRule", db_rule.id, f"Automated Rule '{db_rule.rule_name}' deleted.", username)
+        db.delete(db_rule)
+        db.commit()
+        return True
+
+    def evaluate_loan_rules(self, db: Session, application_data: Any, credit_score_data: Any, rule_set_id: str) -> Dict[str, Any]:
+        # Conceptual: Fetch rules for rule_set_id (e.g., where module_area matches)
+        # rules = self.get_rules_by_module_area(db, module_area=rule_set_id, active_only=True)
+        # For each rule, parse conditions_json and evaluate against application_data, credit_score_data
+        # If conditions met, collect actions from actions_json
+        # This is a placeholder for a proper rule engine execution.
+        print(f"SERVICE (AutomatedRule): Evaluating loan rules for set '{rule_set_id}' (mock).")
+        # Based on the mock data from CreditAnalystAIAgent.tools.evaluate_lending_rules_tool
+        approved = False
+        reasons = []
+        if credit_score_data and credit_score_data.score < 580:
+            reasons.append("Credit score too low (mock rule).")
+        elif credit_score_data and credit_score_data.score >= 650 and application_data and application_data.requested_amount <= 500000:
+            approved = True
+            reasons.append("Score and amount acceptable (mock rule).")
+        else:
+            reasons.append("Default criteria not met (mock rule).")
+
+        return {
+            "recommendation": "APPROVE" if approved else "REJECT",
+            "reasons": reasons,
+            "rules_applied_count": 1 # Mock
+        }
 
 
 # --- Conceptual AI Model Invocation Services ---
