@@ -139,94 +139,255 @@ def update_transaction_status(
     db.refresh(transaction)
     return transaction
 
-# --- NIP Services (Illustrative) ---
-# These would typically call an external NIBSS integration service/client
-def perform_nip_name_enquiry(db: Session, request: schemas.NIPNameEnquiryRequest) -> schemas.NIPNameEnquiryResponse:
-    # response_data = nibss_service.name_enquiry(
-    #     destination_bank_code=request.destination_institution_code,
-    #     account_number=request.account_number,
-    #     channel_code=request.channel_code
-    # )
-    # if response_data.get("response_code") != "00":
-    #     raise ExternalServiceException(f"NIP Name Enquiry failed: {response_data.get('response_message')}")
-    # return schemas.NIPNameEnquiryResponse(**response_data) # Adapt mapping
+# --- NIP Services (Illustrative & Conceptual) ---
+# These would typically call an external NIBSS integration service/client using GenericExternalAPICaller.
+# For now, we mock the NIBSS interaction part.
+
+# Import necessary services for conceptual calls
+from weezy_cbs.third_party_fintech_integration.services import GenericExternalAPICaller, api_service_config_service, external_service_log_service
+# from weezy_cbs.accounts_ledger_management.services import post_transaction_to_ledger # Conceptual ledger posting
+# from weezy_cbs.digital_channels_modules.services import notification_service # Conceptual notification
+
+NIBSS_NIP_SERVICE_NAME = "NIBSS_NIP_SERVICE" # Matches APIServiceConfig.service_name
+
+async def perform_nip_name_enquiry(
+    db: Session,
+    request: schemas.NIPNameEnquiryRequest,
+    correlation_id: Optional[str] = None
+) -> schemas.NIPNameEnquiryResponse:
+    """
+    Performs a NIP Name Enquiry.
+    Conceptually calls NIBSS via GenericExternalAPICaller.
+    """
+    # api_caller = GenericExternalAPICaller(db, api_service_config_service, external_service_log_service)
+    # nibss_payload = { ... map request to NIBSS NE payload ... }
+    # try:
+    #     response = await api_caller.make_request(
+    #         service_name=NIBSS_NIP_SERVICE_NAME,
+    #         method="POST", # Or whatever NIBSS uses
+    #         endpoint_path="/nameenquiry", # NIBSS specific endpoint
+    #         json_payload=nibss_payload,
+    #         correlation_id=correlation_id
+    #     )
+    #     response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+    #     response_data = response.json()
+    #     if response_data.get("responseCode") == "00": # NIBSS success code
+    #         return schemas.NIPNameEnquiryResponse(
+    #             session_id=response_data.get("sessionId"), # Map fields
+    #             destination_institution_code=response_data.get("destinationInstitutionCode"),
+    #             account_number=response_data.get("accountNumber"),
+    #             account_name=response_data.get("accountName"),
+    #             bank_verification_number=response_data.get("bankVerificationNumber"),
+    #             kyc_level=response_data.get("kycLevel"),
+    #             response_code="00"
+    #         )
+    #     else:
+    #         raise ExternalServiceException(f"NIP Name Enquiry failed at NIBSS: {response_data.get('responseMessage')}")
+    # except httpx.HTTPStatusError as e:
+    #     raise ExternalServiceException(f"NIP Name Enquiry HTTP error: {e.response.status_code} - {e.response.text}")
+    # except Exception as e:
+    #     raise ExternalServiceException(f"NIP Name Enquiry unexpected error: {str(e)}")
 
     # Mocked response:
+    print(f"SERVICE: Simulating NIP Name Enquiry for Acc: {request.account_number}, Bank: {request.destination_institution_code}")
     if request.account_number == "0000000000": # Simulate failure
         raise ExternalServiceException("NIP Name Enquiry failed: Invalid account (mock).")
 
     return schemas.NIPNameEnquiryResponse(
-        session_id=uuid.uuid4().hex,
+        session_id=uuid.uuid4().hex[:20],
         destination_institution_code=request.destination_institution_code,
         account_number=request.account_number,
-        account_name="Mock Beneficiary Name",
-        bank_verification_number="22200011122",
-        kyc_level="2",
+        account_name="Mock Beneficiary Name (NIP)",
+        bank_verification_number="22211100099", # Example
+        kyc_level="2", # Example
         response_code="00"
     )
 
-def process_nip_funds_transfer(db: Session, transaction_id: str, nip_request_details: schemas.NIPFundsTransferRequest) -> models.FinancialTransaction:
+async def process_outgoing_nip_funds_transfer(
+    db: Session,
+    transaction_id: str,
+    nip_request_details: schemas.NIPFundsTransferRequest # Contains all NIBSS required fields
+) -> models.FinancialTransaction:
     """
-    Processes an initiated NIP transaction.
-    1. Update transaction status to PROCESSING.
-    2. Call NIBSS for Fund Transfer.
-    3. Update transaction based on NIBSS response (SUCCESSFUL/FAILED).
-    4. If successful, trigger ledger posting.
+    Processes an initiated NIP transaction by calling NIBSS.
     """
-    transaction = update_transaction_status(db, transaction_id, TransactionStatusEnum.PROCESSING, system_remarks="Sent to NIBSS for FT")
+    transaction = get_transaction_by_id(db, transaction_id)
+    if not transaction:
+        raise NotFoundException(f"Transaction {transaction_id} not found for NIP processing.")
 
-    # Mock NIBSS FT call
-    # nibss_ft_response = nibss_service.funds_transfer(nip_request_details)
-    # For mock:
-    mock_nibss_session_id = "NIPFT" + uuid.uuid4().hex[:12]
-    mock_response_code = "00" # Simulate success
-    mock_response_message = "Transaction Successful"
+    transaction = update_transaction_status(db, transaction_id, TransactionStatusEnum.PROCESSING, system_remarks="NIP FT: Sent to NIBSS")
 
-    if transaction.amount > decimal.Decimal("1000000"): # Simulate a failure for large amounts for testing
-        mock_response_code = "91" # Example NIBSS failure code (e.g., "Transaction not permitted to sender")
-        mock_response_message = "Transaction amount too high for this channel (mock)."
+    # api_caller = GenericExternalAPICaller(db, api_service_config_service, external_service_log_service)
+    # nibss_ft_payload = { ... map nip_request_details to NIBSS FT payload ... }
+    # nibss_session_id_from_call = "NIPFT_MOCK_" + uuid.uuid4().hex[:10] # Placeholder
+    # mock_response_code = "00"
+    # mock_response_message = "Transfer Successful"
 
-    # Store NIP specific details
+    # try:
+    #     response = await api_caller.make_request(
+    #         service_name=NIBSS_NIP_SERVICE_NAME, method="POST", endpoint_path="/fundstransfer",
+    #         json_payload=nibss_ft_payload, correlation_id=transaction.id
+    #     )
+    #     response.raise_for_status()
+    #     response_data = response.json()
+    #     nibss_session_id_from_call = response_data.get("sessionId", nibss_session_id_from_call)
+    #     mock_response_code = response_data.get("responseCode", "96") # Default to system error
+    #     mock_response_message = response_data.get("responseMessage", "Error processing at NIBSS")
+
+    # except Exception as e:
+    #     mock_response_code = "96" # System error
+    #     mock_response_message = f"Error calling NIBSS for FT: {str(e)}"
+    #     # Log this critical failure in ExternalServiceLog via api_caller or directly
+
+    # Mock NIBSS FT call response
+    nibss_session_id_from_call = "NIPFT_MOCK_" + uuid.uuid4().hex[:10].upper()
+    mock_response_code = "00"
+    mock_response_message = "Transaction Successful (NIP Mock)"
+    if transaction.amount > decimal.Decimal("5000000"): # Simulate a failure for large amounts
+        mock_response_code = "Z0" # Example NIBSS failure code (e.g., "Transaction Limit Exceeded")
+        mock_response_message = "Transaction amount exceeds NIP limit (mock)."
+
+    # Store/Update NIP specific details
+    nip_tx_record = db.query(models.NIPTransaction).filter(models.NIPTransaction.financial_transaction_id == transaction.id).first()
+    if not nip_tx_record:
+        nip_tx_record = models.NIPTransaction(financial_transaction_id=transaction.id)
+        db.add(nip_tx_record)
+
+    nip_tx_record.nibss_session_id = nibss_session_id_from_call
+    nip_tx_record.name_enquiry_ref = nip_request_details.name_enquiry_ref
+    # nip_tx_record.request_payload_json = json.dumps(nibss_ft_payload) # If logging payload
+    # nip_tx_record.response_payload_json = json.dumps(response_data) if 'response_data' in locals() else None
+
+
+    if mock_response_code == "00": # NIBSS Successful
+        # Conceptual: Trigger debit ledger posting for the sender
+        # from_account = transaction.debit_account_number
+        # to_gl_account = "NIBSS_SETTLEMENT_GL" # Or appropriate GL
+        # try:
+        #     post_transaction_to_ledger(db, from_account, to_gl_account, transaction.amount, transaction.currency,
+        #                                f"NIP Out: {transaction.narration}", transaction.id, "DEBIT_CUSTOMER_CREDIT_GL")
+        #     transaction = update_transaction_status(db, transaction.id, TransactionStatusEnum.SUCCESSFUL,
+        #                                 mock_response_code, mock_response_message, nibss_session_id_from_call,
+        #                                 "NIP successful, local debit ledger posted.")
+        # except Exception as ledger_error:
+        #     # CRITICAL: NIP was successful, but local debit failed. Requires urgent reconciliation.
+        #     transaction = update_transaction_status(db, transaction.id, TransactionStatusEnum.FLAGGED_SUSPICION,
+        #                                 mock_response_code, mock_response_message, nibss_session_id_from_call,
+        #                                 f"NIP successful but local debit ledger failed: {str(ledger_error)}. Needs reconciliation.")
+        #     # TODO: Trigger alert for reconciliation team
+
+        # Simplified mock for successful ledger posting
+        transaction = update_transaction_status(db, transaction.id, TransactionStatusEnum.SUCCESSFUL,
+                                    mock_response_code, mock_response_message, nibss_session_id_from_call,
+                                    "NIP successful, local debit ledger posted (mock).")
+    else: # NIBSS Failed
+        transaction = update_transaction_status(db, transaction.id, TransactionStatusEnum.FAILED,
+                                    mock_response_code, mock_response_message, nibss_session_id_from_call,
+                                    f"NIP transfer failed at NIBSS: {mock_response_message}")
+
+    db.commit()
+    db.refresh(transaction)
+    if nip_tx_record: db.refresh(nip_tx_record)
+    return transaction
+
+async def handle_incoming_nip_credit_notification(
+    db: Session,
+    notification_data: schemas.NIPIncomingCreditNotification # Schema for parsed webhook data
+) -> models.FinancialTransaction:
+    """
+    Handles an incoming NIP credit notification (e.g., from a webhook).
+    """
+    # 1. Validate notification (basic checks, e.g. required fields)
+    # (Pydantic schema validation already does some of this)
+
+    # 2. Check for duplicate processing using NIBSS Session ID
+    existing_ft_by_external_id = db.query(models.FinancialTransaction).filter(
+        models.FinancialTransaction.external_transaction_id == notification_data.nibss_session_id,
+        models.FinancialTransaction.transaction_type == "NIP_INWARD_CREDIT" # Be specific
+    ).first()
+    if existing_ft_by_external_id and existing_ft_by_external_id.status == TransactionStatusEnum.SUCCESSFUL:
+        print(f"SERVICE: Duplicate NIP credit notification received and ignored: {notification_data.nibss_session_id}")
+        # Potentially return the existing transaction or a specific "duplicate" response
+        return existing_ft_by_external_id
+
+    # 3. Identify beneficiary customer and account
+    # beneficiary_account_orm = get_deposit_account(db, notification_data.beneficiary_account_number)
+    # if not beneficiary_account_orm:
+    #     # Log this critical failure: account not found for incoming NIP.
+    #     # This might require manual intervention or return to NIBSS.
+    #     raise NotFoundException(f"Beneficiary account {notification_data.beneficiary_account_number} not found for NIP credit.")
+    # if beneficiary_account_orm.status != "ACTIVE": # Assuming status is string
+    #     raise InvalidOperationException(f"Beneficiary account {notification_data.beneficiary_account_number} is not active.")
+
+    # Mock beneficiary account lookup:
+    mock_beneficiary_customer_id = 123 # Placeholder
+    print(f"SERVICE: Identified beneficiary account {notification_data.beneficiary_account_number} (mock).")
+
+
+    # 4. Create FinancialTransaction record
+    txn_id = _generate_transaction_id("NIPIN")
+    db_transaction = models.FinancialTransaction(
+        id=txn_id,
+        transaction_type="NIP_INWARD_CREDIT", # Specific type
+        channel=TransactionChannelEnum.NIP,
+        status=TransactionStatusEnum.PROCESSING, # Start as processing while attempting ledger
+        amount=notification_data.amount,
+        currency=CurrencyEnum[notification_data.currency.upper()] if notification_data.currency else CurrencyEnum.NGN,
+
+        debit_account_number=notification_data.originator_account_number,
+        debit_account_name=notification_data.originator_account_name,
+        debit_bank_code=notification_data.originator_bank_code,
+
+        credit_account_number=notification_data.beneficiary_account_number,
+        credit_account_name=notification_data.beneficiary_account_name, # Should be our customer's name
+        credit_bank_code="OUR_BANK_CODE", # Weezy CBS's bank code
+        credit_customer_id=mock_beneficiary_customer_id, # Linked to our customer
+
+        narration=notification_data.narration or f"NIP Credit from {notification_data.originator_account_name}",
+        initiated_at=datetime.utcnow(), # When we received it or use NIBSS timestamp if reliable
+        external_transaction_id=notification_data.nibss_session_id,
+        response_code="00", # Assuming NIBSS sent it because it was successful there
+        response_message="Inward NIP Received"
+    )
+    db.add(db_transaction)
+
+    # 5. Create NIPTransaction record
     nip_tx_record = models.NIPTransaction(
-        financial_transaction_id=transaction.id,
-        nibss_session_id=mock_nibss_session_id, # From actual NIBSS response
-        name_enquiry_ref=nip_request_details.name_enquiry_ref
+        financial_transaction_id=txn_id,
+        nibss_session_id=notification_data.nibss_session_id,
+        name_enquiry_ref=notification_data.name_enquiry_ref, # If available in notification
+        nip_channel_code=notification_data.channel_code
     )
     db.add(nip_tx_record)
 
-    if mock_response_code == "00": # Successful NIP transfer
-        final_status = TransactionStatusEnum.SUCCESSFUL
-        # Trigger actual ledger posting
-        # ledger_post_request = LedgerPostRequest(
-        #     from_account_number=transaction.debit_account_number,
-        #     to_account_number=transaction.credit_account_number, # This is interbank, so this is a GL
-        #     # To GL for NIBSS settlement, or suspense account
-        #     to_gl_code = "NIBSS_SETTLEMENT_GL",
-        #     amount=transaction.amount,
-        #     currency=transaction.currency,
-        #     narration=f"NIP Out: {transaction.narration} to {transaction.credit_account_number}",
-        #     transaction_reference=transaction.id, # Link ledger entries to this FT
-        #     channel=transaction.channel.value
-        # )
-        # try:
-        #     post_double_entry_transaction(db, ledger_post_request)
-        # except Exception as ledger_exc:
-        #     # This is critical: NIP was successful but local ledger failed. Requires reconciliation/reversal.
-        #     # For now, mark as successful but flag for investigation.
-        #     final_status = TransactionStatusEnum.FLAGGED
-        #     system_remarks = f"NIP successful ({mock_nibss_session_id}) but local ledger posting failed: {str(ledger_exc)}"
-        #     update_transaction_status(db, transaction_id, final_status, mock_response_code, mock_response_message, mock_nibss_session_id, system_remarks)
-        #     raise InvalidOperationException(system_remarks) # Or handle gracefully
+    # 6. Trigger credit ledger posting
+    # try:
+    #     post_transaction_to_ledger(db,
+    #                                from_gl_account="NIBSS_INWARD_CLEARING_GL",
+    #                                to_account=notification_data.beneficiary_account_number,
+    #                                amount=db_transaction.amount, currency=db_transaction.currency,
+    #                                narration=db_transaction.narration, transaction_reference=txn_id,
+    #                                posting_type="DEBIT_GL_CREDIT_CUSTOMER")
+    #     db_transaction = update_transaction_status(db, txn_id, TransactionStatusEnum.SUCCESSFUL, system_remarks="NIP Inward credit posted to customer account.")
 
-        # Simplified: Assume ledger posting is part of this or will be handled
-        update_transaction_status(db, transaction_id, final_status, mock_response_code, mock_response_message, mock_nibss_session_id, "NIP successful, ledger updated (mock).")
+    #     # 7. (Conceptual) Send customer notification
+    #     # notification_service.send_credit_alert(db, customer_id=mock_beneficiary_customer_id, amount=db_transaction.amount, ...)
 
-    else: # Failed NIP transfer
-        update_transaction_status(db, transaction_id, TransactionStatusEnum.FAILED, mock_response_code, mock_response_message, mock_nibss_session_id, "NIP transfer failed at NIBSS.")
+    # except Exception as e:
+    #     # CRITICAL: Failed to credit customer after receiving NIP value. Requires urgent reconciliation.
+    #     db_transaction = update_transaction_status(db, txn_id, TransactionStatusEnum.FLAGGED_SUSPICION,
+    #                                     system_remarks=f"NIP Inward received ({notification_data.nibss_session_id}) but failed to credit customer: {str(e)}. Needs reconciliation.")
+    #     # TODO: Trigger alert for reconciliation team
 
-    db.commit() # Commit NIPTransaction record and status updates
-    db.refresh(transaction)
-    return transaction
+    # Simplified mock for successful ledger posting
+    db_transaction = update_transaction_status(db, txn_id, TransactionStatusEnum.SUCCESSFUL, system_remarks="NIP Inward credit posted to customer account (mock).")
+
+    db.commit()
+    db.refresh(db_transaction)
+    if nip_tx_record: db.refresh(nip_tx_record)
+
+    print(f"SERVICE: Processed incoming NIP credit {notification_data.nibss_session_id} for Acc: {notification_data.beneficiary_account_number}, Amount: {notification_data.amount}")
+    return db_transaction
 
 
 # --- Intra-bank Transfer ---

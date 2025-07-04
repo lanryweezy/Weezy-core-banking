@@ -191,19 +191,98 @@ class ReportGenerationService(BaseReportingService):
         # This is highly conceptual and complex.
         # It requires a mapping from model_name (string) to actual SQLAlchemy model classes.
         # And a robust filter parser to convert {"field": "op:value"} into SQLAlchemy filter conditions.
-        # Example: target_model = getattr(all_models, model_name, None)
-        # if not target_model: raise ValueError(f"Unknown model: {model_name}")
-        # query = self.db.query(target_model)
-        # ... apply filters, select, sort ...
-        # data = [row.__dict__ for row in query.all()] # Simple conversion
-        print(f"SIMULATING DYNAMIC FILTER: Model: {model_name}, Filters: {filters}, Select: {select_fields}, Sort: {sort_by}")
-        # Placeholder data
-        if model_name == "Customer":
-            return [
-                {"id": 1, "name": "John Doe", "email": "john@example.com", "tier": "TIER_1"},
-                {"id": 2, "name": "Jane Smith", "email": "jane@example.com", "tier": "TIER_2"},
-            ]
-        return [{"message": "Dynamic filter report simulation - no actual data"}]
+        # This is highly conceptual and complex.
+        # It requires a mapping from model_name (string) to actual SQLAlchemy model classes.
+        # And a robust filter parser to convert {"field": "op:value"} into SQLAlchemy filter conditions.
+
+        # Conceptual model map - in a real system, this would be more robust, possibly auto-discovered
+        # or explicitly registered. For now, using placeholder models from other modules.
+        # This assumes models from other modules are importable.
+        from weezy_cbs.customer_identity_management.models import Customer
+        from weezy_cbs.accounts_ledger_management.models import Account, LedgerEntry
+        from weezy_cbs.transaction_management.models import FinancialTransaction
+
+        MODEL_MAP = {
+            "Customer": Customer,
+            "Account": Account,
+            "LedgerEntry": LedgerEntry,
+            "FinancialTransaction": FinancialTransaction,
+            # ... add other queryable models ...
+        }
+
+        target_model = MODEL_MAP.get(model_name)
+        if not target_model:
+            raise ValueError(f"Unsupported model for dynamic filtering: {model_name}")
+
+        query = self.db.query(target_model)
+
+        # Apply filters (conceptual parsing)
+        # Filters format: {"field_name": "operator:value", "age": "gte:30", "status": "in:ACTIVE,PENDING"}
+        if filters:
+            for field_key, filter_value_str in filters.items():
+                parts = filter_value_str.split(":", 1)
+                operator = parts[0].lower()
+                value_str = parts[1] if len(parts) > 1 else ""
+
+                column_attr = getattr(target_model, field_key, None)
+                if not column_attr:
+                    print(f"WARN: Invalid filter field '{field_key}' for model '{model_name}'. Skipping.")
+                    continue
+
+                # Convert value based on column type (simplified - real type conversion needed)
+                actual_value: Any = value_str
+                # TODO: Add type conversion based on column_attr.type (e.g., for int, date, bool)
+                # For 'in' operator, split by comma
+                if operator == "in_" or operator == "notin_":
+                    actual_value = [v.strip() for v in value_str.split(',')]
+                elif isinstance(column_attr.type, (sqlalchemy.Integer, sqlalchemy.Numeric)):
+                    try: actual_value = int(value_str) if isinstance(column_attr.type, sqlalchemy.Integer) else float(value_str)
+                    except ValueError: print(f"WARN: Could not convert value '{value_str}' for field '{field_key}'. Skipping filter."); continue
+                elif isinstance(column_attr.type, sqlalchemy.Date):
+                    try: actual_value = datetime.strptime(value_str, '%Y-%m-%d').date()
+                    except ValueError: print(f"WARN: Could not convert date value '{value_str}' for field '{field_key}'. Use YYYY-MM-DD. Skipping filter."); continue
+                elif isinstance(column_attr.type, sqlalchemy.Boolean):
+                    actual_value = value_str.lower() in ['true', '1', 'yes']
+
+
+                if operator == "eq": query = query.filter(column_attr == actual_value)
+                elif operator == "ne": query = query.filter(column_attr != actual_value)
+                elif operator == "gt": query = query.filter(column_attr > actual_value)
+                elif operator == "gte": query = query.filter(column_attr >= actual_value)
+                elif operator == "lt": query = query.filter(column_attr < actual_value)
+                elif operator == "lte": query = query.filter(column_attr <= actual_value)
+                elif operator == "like": query = query.filter(column_attr.like(f"%{actual_value}%"))
+                elif operator == "ilike": query = query.filter(column_attr.ilike(f"%{actual_value}%"))
+                elif operator == "in_": query = query.filter(column_attr.in_(actual_value))
+                elif operator == "notin_": query = query.filter(column_attr.notin_(actual_value))
+                else: print(f"WARN: Unsupported operator '{operator}' for field '{field_key}'. Skipping filter.")
+
+
+        # Apply select_fields
+        if select_fields:
+            selected_columns = [getattr(target_model, field) for field in select_fields if hasattr(target_model, field)]
+            if selected_columns:
+                query = query.with_entities(*selected_columns)
+
+        # Apply sort_by (e.g., "field_name:asc" or "field_name:desc")
+        if sort_by:
+            sort_field_name, direction = (sort_by.split(":") + ["asc"])[:2] # Default to asc
+            sort_column = getattr(target_model, sort_field_name, None)
+            if sort_column:
+                query = query.order_by(sort_column.desc() if direction.lower() == "desc" else sort_column.asc())
+
+        results_orm = query.all()
+
+        # Convert results to list of dicts
+        data = []
+        if results_orm:
+            if select_fields and selected_columns: # If specific columns were selected
+                 data = [dict(zip(select_fields, row)) for row in results_orm]
+            else: # Full model objects
+                 data = [ {c.name: getattr(row, c.name) for c in target_model.__table__.columns} for row in results_orm]
+
+        print(f"SIMULATED DYNAMIC FILTER RESULT for {model_name}: Found {len(data)} records.")
+        return data
 
 
     def generate_report_from_definition(self, def_id: int, params: Optional[Dict[str, Any]], output_format: str, generated_by_user_id: int, username: str) -> models.GeneratedReportLog:

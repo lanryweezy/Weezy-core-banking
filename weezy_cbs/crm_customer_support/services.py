@@ -389,10 +389,135 @@ class CampaignService(BaseCRMService):
             #    b. (Async) Send message via NotificationService (digital_channels) using campaign_channel and message content.
             #    c. Update CampaignLog status based on send attempt (SENT, FAILED).
 
-        db.commit()
+            if db_campaign.status == models.CampaignStatusEnum.ACTIVE: # Only segment and create logs if campaign is actually going active now
+                targeted_customer_ids = self._segment_audience(db, db_campaign.target_audience_rules_json)
+
+                # In a real system, this logging and subsequent message sending would be a background task.
+                for cust_id in targeted_customer_ids:
+                    # Fetch customer contact details for the campaign channel
+                    # This part is highly conceptual and depends on how customer contacts are stored and preferred channels.
+                    # For mock, we'll assume we can get a recipient_identifier.
+                    # customer_contact_info = cim_services.get_customer_contact_for_campaign(db, cust_id, db_campaign.campaign_channel)
+                    # if not customer_contact_info: continue
+
+                    # Mock recipient identifier
+                    recipient_identifier = f"customer_{cust_id}_contact_for_{db_campaign.campaign_channel.value}" # Placeholder
+
+                    existing_log = db.query(models.CampaignLog).filter(
+                        models.CampaignLog.campaign_id == db_campaign.id,
+                        models.CampaignLog.customer_id == cust_id
+                    ).first()
+                    if not existing_log: # Avoid duplicate logs if re-launching a paused campaign
+                        log_entry = models.CampaignLog(
+                            campaign_id=db_campaign.id,
+                            customer_id=cust_id,
+                            recipient_identifier=recipient_identifier, # Actual email/phone
+                            status=models.CampaignLogEntryStatusEnum.TARGETED
+                            # Or PENDING_SEND if immediately queueing for send
+                        )
+                        db.add(log_entry)
+                db.commit() # Commit all new log entries
+
+                # Conceptual: Trigger async task for actual message dispatch based on CampaignLog entries
+                # background_tasks.add_task(dispatch_campaign_messages, campaign_id=db_campaign.id)
+                print(f"SIMULATING: Audience segmented for campaign '{db_campaign.campaign_name}'. {len(targeted_customer_ids)} customers targeted. Message dispatch would be queued.")
+
+
+        db.commit() # Commit status change
         db.refresh(db_campaign)
         self._audit_log(db, "CAMPAIGN_LAUNCH", "Campaign", db_campaign.id, f"Campaign '{db_campaign.campaign_name}' status set to {db_campaign.status.value}.", performing_username)
         return True
+
+    def _segment_audience(self, db: Session, rules_json_str: Optional[str]) -> List[int]:
+        """
+        Conceptually segments audience based on rules.
+        In a real system, this would parse rules_json and build a dynamic SQLAlchemy query
+        against the Customer model (from customer_identity_management).
+        Returns a list of customer_ids.
+        """
+        if not rules_json_str:
+            print("CAMPAIGN_SEGMENT: No rules provided, returning mock all/sample customers.")
+            return [1, 2, 3, 4, 5, 10, 12, 15, 18, 20, 21, 22, 23, 24, 25] # Mock IDs
+
+        try:
+            # Example rules_list structure: [{"field": "city", "op": "eq", "value": "Lagos"}, {"field": "account_tier", "op": "eq", "value": "TIER_3"}]
+            # This implies ANDing all conditions. More complex logic (OR, groups) would need a more robust parser.
+            rules_conditions = json.loads(rules_json_str)
+        except json.JSONDecodeError:
+            print(f"CAMPAIGN_SEGMENT_ERROR: Invalid JSON in target_audience_rules_json: {rules_json_str}")
+            return []
+
+        if not isinstance(rules_conditions, list):
+            print(f"CAMPAIGN_SEGMENT_ERROR: Rules JSON must be a list of conditions.")
+            return []
+
+        # --- Conceptual Query Building ---
+        # This requires importing Customer model and potentially others if rules span across tables.
+        # from weezy_cbs.customer_identity_management.models import Customer as CIMCustomer
+        # from sqlalchemy import and_, or_ # For combining conditions
+
+        # query = db.query(CIMCustomer.id) # Start with selecting customer IDs
+
+        # for condition in rules_conditions:
+        #     field_name = condition.get("field")
+        #     operator = condition.get("op", "").lower()
+        #     value = condition.get("value")
+
+        #     if not field_name or not operator or value is None: # value can be False or 0
+        #         print(f"CAMPAIGN_SEGMENT_WARN: Skipping invalid rule condition: {condition}")
+        #         continue
+
+        #     column_attr = getattr(CIMCustomer, field_name, None)
+        #     if not column_attr:
+        #         print(f"CAMPAIGN_SEGMENT_WARN: Invalid field '{field_name}' for Customer model. Skipping.")
+        #         continue
+
+            # # Conceptual type conversion and filter application
+            # # Needs proper type handling based on column_attr.type for dates, numbers, enums etc.
+            # try:
+            #     if operator == "eq": query = query.filter(column_attr == value)
+            #     elif operator == "ne": query = query.filter(column_attr != value)
+            #     elif operator == "gt": query = query.filter(column_attr > value)
+            #     # ... other operators: gte, lt, lte, like, ilike, in_, notin_ ...
+            #     # For 'in_', value should be a list.
+            #     # For date fields, value might need to be parsed into datetime.date object.
+            #     else:
+            #         print(f"CAMPAIGN_SEGMENT_WARN: Unsupported operator '{operator}' for field '{field_name}'.")
+            # except Exception as e:
+            #     print(f"CAMPAIGN_SEGMENT_ERROR: Error applying filter for {condition}: {e}")
+            #     continue # Skip problematic filter
+
+        # print(f"CAMPAIGN_SEGMENT: Conceptually built query for rules: {rules_conditions}")
+        # customer_id_tuples = query.all()
+        # return [cid[0] for cid in customer_id_tuples]
+
+        # Mock result based on presence of specific rules for demonstration
+        mock_customer_ids_pool = list(range(1, 51)) # Base pool of 50 customers for mock
+
+        # Simulate filtering based on some common rule fields
+        filtered_ids = mock_customer_ids_pool
+        for condition in rules_conditions:
+            field = condition.get("field")
+            op = condition.get("op")
+            value = condition.get("value")
+
+            if field == "city" and op == "eq" and value == "Lagos":
+                filtered_ids = [cid for cid in filtered_ids if cid % 2 == 0] # Even IDs are in Lagos
+            elif field == "account_tier" and op == "eq" and value == "TIER_3":
+                filtered_ids = [cid for cid in filtered_ids if cid % 3 == 0] # Divisible by 3 are Tier 3
+            elif field == "age" and op == "gte": # age >= value
+                # Assume customer_id roughly correlates to age for mock (e.g. lower IDs are older)
+                try:
+                    age_val = int(value)
+                    # Mock: if age >= 30, assume customer_id <= (50 - (age_val - 20)) for a rough filter
+                    # This is a very arbitrary mock logic for age.
+                    if age_val >= 30:
+                         filtered_ids = [cid for cid in filtered_ids if cid <= (50 - (age_val - 20))]
+                except ValueError:
+                    pass # Ignore if age value is not int for mock
+
+        print(f"CAMPAIGN_SEGMENT: Mock segmented audience for rules {rules_conditions} -> IDs: {filtered_ids[:10]}... ({len(filtered_ids)} total)")
+        return filtered_ids
 
 
 # Instantiate services
