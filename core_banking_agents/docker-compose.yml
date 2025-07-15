@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7.2-alpine # Using a recent stable version of Redis Alpine for smaller size
+    container_name: core-banking-redis
+    ports:
+      - "6379:6379" # Exposes Redis on the default port to the host machine
+    volumes:
+      - redis_data:/data # Persists Redis data across container restarts
+    command: redis-server --appendonly yes # Enables AOF persistence
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - banking_services_network
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.4 # Specify a version; check for latest stable
+    container_name: core-banking-qdrant
+    ports:
+      - "6333:6333" # gRPC port
+      - "6334:6334" # REST API port (optional, but good for debugging/direct access)
+    volumes:
+      - qdrant_storage:/qdrant/storage # Persists Qdrant data
+    # You can set Qdrant configuration via environment variables or a config file
+    # environment:
+    #   QDRANT__SERVICE__API_KEY: "your_api_key_if_needed_for_local_dev" # Example, not typically needed for local Qdrant
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"] # Qdrant readiness probe
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - banking_services_network
+
+  # --- Placeholder for Agent Services ---
+  # Example for one agent (uncomment and adapt if you want to dockerize agents)
+  # customer_onboarding_agent_api:
+  #   build:
+  #     context: . # Assumes Dockerfile is in the root or specify path
+  #     dockerfile: ./agents/customer_onboarding_agent/Dockerfile # You'll need to create this Dockerfile
+  #   container_name: customer-onboarding-agent
+  #   ports:
+  #     - "8001:80" # Example: map port 8001 on host to 80 in container
+  #   environment:
+  #     # Pass necessary environment variables to the agent's FastAPI app
+  #     # E.g., DATABASE_URL, REDIS_HOST, QDRANT_HOST, OPENAI_API_KEY
+  #     - REDIS_HOST=redis # Service name in this docker-compose network
+  #     - QDRANT_HOST=qdrant # Service name
+  #     # - OPENAI_API_KEY=${OPENAI_API_KEY} # Pass from your .env file
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     qdrant:
+  #       condition: service_healthy
+  #   volumes:
+  #     - .:/app # Mounts the current directory into /app in the container (for development)
+  #   networks:
+  #     - banking_services_network
+  #   restart: unless-stopped
+
+volumes:
+  redis_data: # Named volume for Redis persistence
+  qdrant_storage: # Named volume for Qdrant persistence
+
+networks:
+  banking_services_network:
+    driver: bridge
+
+# Instructions:
+# 1. Save this file as `docker-compose.yml` in the root of your project.
+# 2. If you plan to use environment variables (like OPENAI_API_KEY) for agent services,
+#    create a `.env` file in the same directory with your keys, e.g.:
+#    OPENAI_API_KEY=your_actual_openai_api_key
+# 3. Run `docker-compose up -d` to start Redis and Qdrant in detached mode.
+# 4. Your Python applications (running locally or in other containers) can then connect to:
+#    - Redis: `redis://localhost:6379` (or `redis://redis:6379` if from another service in this compose network)
+#    - Qdrant: `http://localhost:6333` for gRPC or `http://localhost:6334` for REST
+#              (or `http://qdrant:6333` if from another service in this compose network)
+#
+# To stop the services: `docker-compose down`
+# To view logs: `docker-compose logs redis` or `docker-compose logs qdrant`

@@ -1,0 +1,52 @@
+# Core Dependencies
+fastapi>=0.100.0,<0.112.0
+uvicorn[standard]>=0.22.0,<0.30.0
+pydantic>=2.0,<3.0
+sqlalchemy>=2.0,<2.1
+psycopg2-binary # For PostgreSQL, if used. Or mysqlclient, etc.
+redis>=5.0,<6.0
+qdrant-client>=1.7,<1.10 # Check latest compatible version
+
+# LLM and Agent Frameworks (choose one or more)
+# Option 1: CrewAI (includes LangChain)
+crewai>=0.28.8,<0.40.0
+crewai[tools]>=0.1.6,<0.3.0 # For common CrewAI tools
+
+# Option 2: LangChain (if not using CrewAI, or for specific LangChain components)
+# langchain>=0.1.0,<0.3.0
+# langchain-openai # If using OpenAI models with LangChain directly
+# langchain-community
+# langchain-core
+
+# For OpenAI models (used by CrewAI by default or LangChain)
+openai>=1.0.0,<2.0.0
+
+# Data Handling & Analysis
+pandas>=2.0,<2.3
+numpy>=1.20,<1.27
+
+# Forecasting (example, if Finance Insights Agent uses Prophet)
+# prophet>=1.1.0,<1.2.0 # Note: Prophet can have complex installation
+
+# Visualization (example, if Finance Insights Agent uses Matplotlib)
+matplotlib>=3.5,<3.10
+
+# Utilities
+python-dotenv>=1.0.0,<1.2.0 # For loading .env files
+# python-jose[cryptography] # For JWT tokens if implementing auth directly
+
+# Testing
+# pytest>=7.0,<9.0
+# pytest-cov # For coverage reports
+# httpx # For testing FastAPI async clients
+
+# Linters and Formatters (development dependencies, often in a separate dev-requirements.txt)
+# ruff
+# mypy
+
+# Other specific needs for tools:
+# requests # For making HTTP requests in tools
+
+# Note: Some libraries like Prophet can have tricky installations.
+# It's good to specify versions to ensure compatibility.
+# Always check for the latest stable versions compatible with your Python version.
