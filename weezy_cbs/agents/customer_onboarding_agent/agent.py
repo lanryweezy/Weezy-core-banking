@@ -1,6 +1,8 @@
 # Agent for Customer Onboarding
 from . import tools
-from . import config # To access configurations like API keys or default values
+from . import config
+from weezy_cbs.accounts_ledger_management import services as account_services
+from weezy_cbs.accounts_ledger_management import schemas as account_schemas
 
 class CustomerOnboardingAgent:
     def __init__(self, agent_id="onboarding_agent_001", memory_storage=None):
@@ -26,12 +28,13 @@ class CustomerOnboardingAgent:
         self._get_session_memory(session_id) # Initialize memory if not present
         return "Welcome to Weezy Bank! I'm here to help you open an account. Let's start with your documents."
 
-    def process_documents(self, session_id: str, name: str, bvn: str = None, nin: str = None, id_card_path: str = None, utility_bill_path: str = None, selfie_path: str = None) -> dict:
+    def process_documents(self, session_id: str, name: str, phone_number: str, bvn: str = None, nin: str = None, id_card_path: str = None, utility_bill_path: str = None, selfie_path: str = None) -> dict:
         """
         Processes customer documents through various verification steps.
         Inputs:
             session_id: Unique identifier for the onboarding session.
             name: Customer's full name.
+            phone_number: Customer's phone number.
             bvn: Bank Verification Number.
             nin: National Identity Number.
             id_card_path: File path to the ID card image.
@@ -41,17 +44,25 @@ class CustomerOnboardingAgent:
         session_memory = self._get_session_memory(session_id)
         session_memory['data']['customer_name'] = name
 
+        # Step 0: Create a customer record
+        try:
+            customer = tools.customer_services.create_customer(next(tools.get_db()), tools.customer_schemas.CustomerCreate(first_name=name.split(" ")[0], last_name=name.split(" ")[-1], phone_number=phone_number, bvn=bvn, nin=nin))
+            self._update_session_memory(session_id, "customer_created", {"customer_id": customer.id})
+        except tools.customer_services.DuplicateEntryException as e:
+            return {"status": "failed", "message": "Customer with these details already exists.", "details": str(e)}
+
+
         # Step 1: BVN/NIN Verification
         if bvn:
-            bvn_verification_result = tools.verify_bvn_nin(bvn=bvn)
+            bvn_verification_result = tools.verify_bvn_nin(customer_id=customer.id, bvn=bvn)
             self._update_session_memory(session_id, "bvn_verification_attempted", {"bvn_result": bvn_verification_result})
-            if not bvn_verification_result.get("valid"):
+            if not bvn_verification_result.get("is_valid"):
                 return {"status": "failed", "message": "BVN verification failed.", "details": bvn_verification_result}
             # Potentially cross-check name from BVN with provided name
         elif nin:
-            nin_verification_result = tools.verify_bvn_nin(nin=nin)
+            nin_verification_result = tools.verify_bvn_nin(customer_id=customer.id, nin=nin)
             self._update_session_memory(session_id, "nin_verification_attempted", {"nin_result": nin_verification_result})
-            if not nin_verification_result.get("valid"):
+            if not nin_verification_result.get("is_valid"):
                 return {"status": "failed", "message": "NIN verification failed.", "details": nin_verification_result}
         else:
             return {"status": "failed", "message": "Either BVN or NIN must be provided."}
@@ -95,19 +106,21 @@ class CustomerOnboardingAgent:
 
     def _create_customer_account(self, session_id: str, customer_data: dict) -> dict:
         """
-        Placeholder for actual account creation logic.
-        This would typically involve interacting with the Accounts & Ledger Management module.
+        Creates a customer account using the accounts_ledger_management service.
         """
         print(f"Attempting to create account for session {session_id} with data: {customer_data}")
-        # Simulate account creation
-        # In a real system, this would make an API call to the core banking system.
-        # from weezy_cbs.accounts_ledger_management.services import create_account
-        # return create_account(customer_data, tier=config.DEFAULT_ACCOUNT_TIER)
-
-        # Mock response:
-        mock_account_number = f"WZY{config.DEFAULT_ACCOUNT_TIER}00{str(abs(hash(session_id)))[:7]}"
-        print(f"Mock account created: {mock_account_number}")
-        return {"success": True, "account_number": mock_account_number, "message": "Account created successfully via mock."}
+        try:
+            account = account_services.create_account(
+                db=next(tools.get_db()),
+                account_in=account_schemas.AccountCreateRequest(
+                    customer_id=customer_data['customer_id'],
+                    product_code="SAVINGS_TIER_1" # This should be determined by the agent's logic
+                ),
+                created_by_user_id="onboarding_agent"
+            )
+            return {"success": True, "account_number": account.account_number, "message": "Account created successfully."}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
     def get_onboarding_status(self, session_id: str) -> dict:
         """Returns the current onboarding status for a given session."""
@@ -115,46 +128,3 @@ class CustomerOnboardingAgent:
             return self.memory[session_id]
         return {"status": "not_found", "message": "No onboarding session found for this ID."}
 
-# Example Usage (for testing the agent)
-if __name__ == "__main__":
-    onboarding_agent = CustomerOnboardingAgent()
-
-    session_id = "user_session_abc123"
-
-    print(onboarding_agent.greet_customer(session_id))
-
-    # Simulate providing documents (paths would be to actual files in a real scenario)
-    # Create dummy files for testing if they don't exist
-    with open("dummy_id_card.png", "w") as f: f.write("dummy_id_content")
-    with open("dummy_utility_bill.png", "w") as f: f.write("dummy_bill_content")
-    with open("dummy_selfie.png", "w") as f: f.write("dummy_selfie_content")
-
-    onboarding_result = onboarding_agent.process_documents(
-        session_id=session_id,
-        name="Ada Lovelace",
-        bvn="12345678901", # Test BVN
-        id_card_path="dummy_id_card.png",
-        utility_bill_path="dummy_utility_bill.png",
-        selfie_path="dummy_selfie.png"
-    )
-
-    print("\nOnboarding Result:")
-    print(onboarding_result)
-
-    print("\nFinal Onboarding Status:")
-    print(onboarding_agent.get_onboarding_status(session_id))
-
-    # Example of a NIN based onboarding
-    session_id_nin = "user_session_xyz789"
-    print(onboarding_agent.greet_customer(session_id_nin))
-    onboarding_result_nin = onboarding_agent.process_documents(
-        session_id=session_id_nin,
-        name="Charles Babbage",
-        nin="10987654321", # Test NIN
-        id_card_path="dummy_id_card.png",
-        selfie_path="dummy_selfie.png"
-    )
-    print("\nOnboarding Result (NIN):")
-    print(onboarding_result_nin)
-    print("\nFinal Onboarding Status (NIN):")
-    print(onboarding_agent.get_onboarding_status(session_id_nin))

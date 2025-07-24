@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import text
+from datetime import datetime
 
 from .database import engine, Base, get_db, create_all_tables # Import your DB setup
 
@@ -90,7 +92,3 @@ async def health_check(db: Session = Depends(get_db)):
 # Then run: python -m weezy_cbs.database
 # (This assumes your project root is the parent of 'weezy_cbs' directory and it's in PYTHONPATH)
 # Or, from within the 'weezy_cbs' directory's parent: python weezy_cbs/database.py
-
-# Import 'text' from sqlalchemy for the health check query
-from sqlalchemy import text
-from datetime import datetime # For timestamp in health check

@@ -6,12 +6,7 @@ from datetime import datetime, date # For date query params
 import decimal
 
 from . import services, schemas, models
-# from weezy_cbs.database import get_db # Assuming a get_db dependency
-# from weezy_cbs.auth.dependencies import get_current_active_user, get_current_active_admin_user, get_current_teller_or_system_user
-
-# Placeholder get_db and auth
-def get_db_placeholder(): yield None # In a real app, this yields a SQLAlchemy Session
-get_db = get_db_placeholder
+from weezy_cbs.database import get_db
 
 def get_current_user_placeholder(): return {"id": "user_SYSTEM", "username": "system"} # Mock
 get_current_active_user = get_current_user_placeholder

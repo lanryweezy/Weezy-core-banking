@@ -1,27 +1,10 @@
 # API Endpoints for Customer & Identity Management using FastAPI
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body # Added Body
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from . import services, schemas, models
-# Assuming a get_db dependency is defined in weezy_cbs.database
-# from weezy_cbs.database import get_db
-# from weezy_cbs.auth.dependencies import get_current_active_user, get_current_active_admin_user # For auth
-
-# For now, let's define a placeholder get_db.
-# This should be properly set up with SQLAlchemy session management.
-def get_db_placeholder():
-    # This is a placeholder. In a real FastAPI app, this would yield a SQLAlchemy Session.
-    # from weezy_cbs.database import SessionLocal # Assuming SessionLocal is defined in database.py
-    # db = SessionLocal()
-    # try:
-    #     yield db
-    # finally:
-    #     db.close()
-    # For mock purposes where services might not use db:
-    yield None # Returning None will cause errors if services.py actually uses the db session.
-
-get_db = get_db_placeholder # Assign placeholder
+from weezy_cbs.database import get_db
 
 # Placeholder for current user (replace with actual auth dependency)
 def get_current_user_placeholder():
