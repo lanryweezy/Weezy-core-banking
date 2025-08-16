@@ -1,15 +1,9 @@
 # API Endpoints for Customer & Identity Management using FastAPI
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body # Added Body
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from . import services, schemas, models
-# Assuming a get_db dependency is defined in weezy_cbs.database
-from weezy_cbs.database import get_db # Use the actual get_db
-# Import staff authentication dependency
-from weezy_cbs.core_infrastructure_config_engine.api import get_current_active_superuser
-from weezy_cbs.core_infrastructure_config_engine.models import User as CoreUser # For type hint
-
 
 router = APIRouter(
     prefix="/customer-identity",

@@ -1,5 +1,5 @@
 # Pydantic schemas for Customer & Identity Management
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date # Use date for date-only fields
 import enum
@@ -69,29 +69,29 @@ class CustomerBase(BaseModel):
     is_pep: Optional[bool] = Field(False, description="Is the customer a Politically Exposed Person?")
 
 
-    @validator('company_name', always=True)
-    def company_name_required_for_non_individual(cls, v, values):
-        if values.get('customer_type') in [CustomerTypeSchema.SME, CustomerTypeSchema.CORPORATE] and not v:
+    @field_validator('company_name')
+    def company_name_required_for_non_individual(cls, v, info):
+        if info.data.get('customer_type') in [CustomerTypeSchema.SME, CustomerTypeSchema.CORPORATE] and not v:
             raise ValueError('company_name is required for SME/CORPORATE customer types')
-        if values.get('customer_type') == CustomerTypeSchema.INDIVIDUAL and v:
+        if info.data.get('customer_type') == CustomerTypeSchema.INDIVIDUAL and v:
             # Optionally clear or raise error if company_name provided for individual
             # For now, let's allow it but it might not be used.
             pass
         return v
 
-    @validator('first_name', 'last_name', 'date_of_birth', 'gender', 'mother_maiden_name', always=True)
-    def individual_fields_consistency(cls, v, values, field):
-        if values.get('customer_type') == CustomerTypeSchema.INDIVIDUAL and v is None and field.name in ['first_name', 'last_name', 'date_of_birth']: # Gender MMN optional
-            raise ValueError(f'{field.name} is required for INDIVIDUAL customer type')
-        if values.get('customer_type') != CustomerTypeSchema.INDIVIDUAL and v is not None and field.name in ['date_of_birth', 'gender', 'mother_maiden_name']:
+    @field_validator('first_name', 'last_name', 'date_of_birth', 'gender', 'mother_maiden_name')
+    def individual_fields_consistency(cls, v, info):
+        if info.data.get('customer_type') == CustomerTypeSchema.INDIVIDUAL and v is None and info.field_name in ['first_name', 'last_name', 'date_of_birth']: # Gender MMN optional
+            raise ValueError(f'{info.field_name} is required for INDIVIDUAL customer type')
+        if info.data.get('customer_type') != CustomerTypeSchema.INDIVIDUAL and v is not None and info.field_name in ['date_of_birth', 'gender', 'mother_maiden_name']:
              # Optionally clear or raise error for individual-specific fields on corporate
             pass
         return v
 
-    @validator('rc_number', 'date_of_incorporation', always=True)
-    def corporate_fields_consistency(cls, v, values, field):
-        if values.get('customer_type') in [CustomerTypeSchema.SME, CustomerTypeSchema.CORPORATE] and v is None and field.name in ['rc_number', 'date_of_incorporation']:
-            raise ValueError(f'{field.name} is required for SME/CORPORATE customer types')
+    @field_validator('rc_number', 'date_of_incorporation')
+    def corporate_fields_consistency(cls, v, info):
+        if info.data.get('customer_type') in [CustomerTypeSchema.SME, CustomerTypeSchema.CORPORATE] and v is None and info.field_name in ['rc_number', 'date_of_incorporation']:
+            raise ValueError(f'{info.field_name} is required for SME/CORPORATE customer types')
         return v
 
 
