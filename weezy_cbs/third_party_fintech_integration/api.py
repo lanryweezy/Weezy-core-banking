@@ -1,189 +1,308 @@
-# API Endpoints for Third-Party & Fintech Integration Module
-# These are mostly for webhooks from third parties or admin configurations.
-# Direct calls to third-party services are usually done via the *services.py* in this module,
-# invoked by other core CBS modules' services.
+from typing import List, Optional, Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Request, Header, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import Any, Dict, List, Optional
+import json # For parsing raw request body if not auto-parsed by FastAPI for certain content types
 
-from . import services, schemas, models
-# from weezy_cbs.database import get_db
-# from weezy_cbs.auth.dependencies import get_current_active_admin_user, verify_third_party_webhook_signature
+from weezy_cbs.database import get_db
+from . import schemas, services, models
+from .services import (
+    api_service_config_service, external_service_log_service, webhook_event_log_service
+)
+# Assuming an authentication dependency from core_infrastructure_config_engine
+from weezy_cbs.core_infrastructure_config_engine.api import get_current_active_superuser
+from weezy_cbs.core_infrastructure_config_engine.models import User as CoreUser # For type hint
 
-# Placeholder get_db and auth
-def get_db_placeholder(): yield None
-get_db = get_db_placeholder
-def get_current_active_admin_user_placeholder(): return {"id": "admin01", "role": "admin"}
-get_current_active_admin_user = get_current_active_admin_user_placeholder
-
-# Placeholder for webhook signature verification dependency
-async def verify_webhook_signature_placeholder(
-    request: Request,
-    x_webhook_signature: Optional[str] = Header(None, alias="X-Webhook-Signature"), # Example header name
-    # service_name: models.ThirdPartyServiceEnum # Would need to know which service this webhook is for
-):
-    # In a real app:
-    # 1. Get raw request body: `raw_body = await request.body()`
-    # 2. Fetch the configured secret for `service_name` from `ThirdPartyConfig`.
-    # 3. Compute expected signature using `raw_body` and the secret.
-    # 4. Compare with `x_webhook_signature`. If mismatch, raise HTTPException 401/403.
-    # This placeholder does no actual verification.
-    if x_webhook_signature and "invalid" in x_webhook_signature: # Simple test for failure
-        # raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature.")
-        pass # Allow for now
-    return True # Assume valid for placeholder
-verify_third_party_webhook_signature = verify_webhook_signature_placeholder
-
-
-router = APIRouter(
-    prefix="/third-party-integrations",
-    tags=["Third-Party & Fintech Integrations"],
+# Main router for Third-Party Integration Admin & Webhooks
+integrations_api_router = APIRouter(
+    prefix="/integrations",
+    tags=["Third-Party Integrations"],
 )
 
-# --- Third-Party Configuration Endpoints (Admin) ---
-@router.post("/admin/configs", response_model=schemas.ThirdPartyConfigResponse, status_code=status.HTTP_201_CREATED)
-def configure_third_party_service(
-    config_in: schemas.ThirdPartyConfigCreateRequest, # Service layer should encrypt sensitive fields
+# --- APIServiceConfig Admin Endpoints ---
+admin_configs_router = APIRouter(
+    prefix="/admin/service-configs",
+    tags=["Admin: API Service Configurations"],
+    dependencies=[Depends(get_current_active_superuser)]
+)
+
+@admin_configs_router.post("/", response_model=schemas.APIServiceConfigResponse, status_code=status.HTTP_201_CREATED)
+async def create_api_service_config_endpoint(
+    config_in: schemas.APIServiceConfigCreate,
     db: Session = Depends(get_db),
-    current_admin: dict = Depends(get_current_active_admin_user)
+    current_user: CoreUser = Depends(get_current_active_superuser)
 ):
-    """Configure connection details for a third-party service. (Admin operation)"""
-    if db is None: raise HTTPException(status_code=503, detail="Database not configured for API.")
-    # existing_config = db.query(models.ThirdPartyConfig).filter(models.ThirdPartyConfig.service_name == config_in.service_name).first()
-    # if existing_config:
-    #     # Update logic: services.update_third_party_config(db, existing_config.id, config_in)
-    #     raise HTTPException(status_code=409, detail=f"Configuration for {config_in.service_name.value} already exists. Use PUT to update.")
-
-    # For now, assume service handles create/update or this is simplified create
-    # db_config = services.save_third_party_config(db, config_in) # This service would encrypt keys
-
-    # Mock implementation:
-    mock_db_config = models.ThirdPartyConfig(
-        id=1, service_name=config_in.service_name, api_base_url=str(config_in.api_base_url),
-        is_active=config_in.is_active, last_updated=datetime.utcnow()
+    return api_service_config_service.create_config(
+        db, config_in=config_in, user_id=current_user.id, username=current_user.username
     )
-    # db.add(mock_db_config); db.commit(); db.refresh(mock_db_config)
-    return schemas.ThirdPartyConfigResponse.from_orm(mock_db_config)
 
+@admin_configs_router.get("/", response_model=schemas.PaginatedAPIServiceConfigResponse)
+async def list_api_service_configs_endpoint(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
+    configs, total = api_service_config_service.get_all_configs(db, skip=skip, limit=limit)
+    # Note: APIServiceConfigResponse schema has credentials_config_json flagged for masking.
+    # Actual masking logic would apply here if not done by Pydantic model itself based on user role.
+    return {"items": configs, "total": total, "page": (skip // limit) + 1, "size": limit}
 
-@router.get("/admin/configs", response_model=List[schemas.ThirdPartyConfigResponse])
-def list_all_third_party_configs(
+@admin_configs_router.get("/{config_id}", response_model=schemas.APIServiceConfigResponse)
+async def read_api_service_config_endpoint(config_id: int, db: Session = Depends(get_db)):
+    db_config = api_service_config_service.get_config_by_id(db, config_id)
+    if not db_config:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API Service Configuration not found")
+    # Masking note applies here too.
+    return db_config
+
+@admin_configs_router.put("/{config_id}", response_model=schemas.APIServiceConfigResponse)
+async def update_api_service_config_endpoint(
+    config_id: int,
+    config_upd: schemas.APIServiceConfigUpdate,
     db: Session = Depends(get_db),
-    current_admin: dict = Depends(get_current_active_admin_user)
+    current_user: CoreUser = Depends(get_current_active_superuser)
 ):
-    """List all configured third-party services. (Admin operation)"""
-    if db is None: raise HTTPException(status_code=503, detail="Database not configured for API.")
-    # configs = db.query(models.ThirdPartyConfig).all()
-    # return [schemas.ThirdPartyConfigResponse.from_orm(c) for c in configs]
-    # Mock response:
-    return [
-        schemas.ThirdPartyConfigResponse(id=1, service_name=models.ThirdPartyServiceEnum.CREDIT_BUREAU_CRC, api_base_url="https://api.crc.com.ng", is_active=True),
-        schemas.ThirdPartyConfigResponse(id=2, service_name=models.ThirdPartyServiceEnum.NIMC_NIN_VERIFICATION, api_base_url="https://api.nimc.gov.ng", is_active=False)
-    ]
+    updated_config = api_service_config_service.update_config(
+        db, config_id=config_id, config_upd=config_upd, username=current_user.username
+    )
+    if not updated_config:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API Service Configuration not found")
+    return updated_config
 
-# --- Webhook Handler Endpoints (Example for a generic third party) ---
-# Each third party might have its own dedicated webhook endpoint for clarity and specific signature verification.
-@router.post("/webhooks/{service_name}", status_code=status.HTTP_200_OK)
-async def handle_generic_third_party_webhook(
-    service_name: models.ThirdPartyServiceEnum, # Path parameter to identify the service
-    request: Request, # To get raw body for signature verification
-    # signature_valid: bool = Depends(verify_third_party_webhook_signature), # Pass service_name to this dependency
+@admin_configs_router.delete("/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_api_service_config_endpoint(
+    config_id: int,
+    db: Session = Depends(get_db),
+    current_user: CoreUser = Depends(get_current_active_superuser)
+):
+    if not api_service_config_service.delete_config(db, config_id=config_id, username=current_user.username):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API Service Configuration not found")
+    return None
+
+# --- ExternalServiceLog Admin Endpoints ---
+admin_ext_logs_router = APIRouter(
+    prefix="/admin/external-service-logs",
+    tags=["Admin: External Service Logs (Outgoing)"],
+    dependencies=[Depends(get_current_active_superuser)]
+)
+
+@admin_ext_logs_router.get("/", response_model=schemas.PaginatedExternalServiceLogResponse)
+async def list_external_service_logs_endpoint(
+    service_name: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+    is_success: Optional[bool] = None,
+    skip: int = 0, limit: int = 20,
     db: Session = Depends(get_db)
 ):
+    logs, total = external_service_log_service.get_logs(
+        db, service_name=service_name, correlation_id=correlation_id, is_success=is_success, skip=skip, limit=limit
+    )
+    # Note: ExternalServiceLogResponse schema has payloads flagged for masking.
+    # Actual masking logic would apply here before returning.
+    return {"items": logs, "total": total, "page": (skip // limit) + 1, "size": limit}
+
+@admin_ext_logs_router.get("/{log_id}", response_model=schemas.ExternalServiceLogResponse)
+async def read_external_service_log_endpoint(log_id: int, db: Session = Depends(get_db)):
+    db_log = external_service_log_service.get_log_by_id(db, log_id)
+    if not db_log:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="External Service Log not found")
+    # Masking note applies here too.
+    return db_log
+
+
+# --- Webhook Receiver Endpoint ---
+webhooks_receiver_router = APIRouter(prefix="/webhooks", tags=["Webhook Receivers"])
+
+async def process_webhook_event_background(log_id: int, db_session_creator: Any):
     """
-    Generic webhook handler for incoming notifications from various third parties.
-    Signature verification and specific processing logic depend on `service_name`.
+    Conceptual background task to process a webhook event.
+    It needs its own DB session.
     """
-    if db is None: raise HTTPException(status_code=503, detail="Database not configured for API.")
-
-    # Manually call placeholder signature verifier for this example
-    # In real app, `Depends` would handle it and raise error if invalid.
-    # This also means the dependency needs to know which service_name's secret to use.
-    # One way is to have separate endpoint like /webhooks/credit-bureau-crc
-    # For now, simulate:
-    x_sig = request.headers.get("X-Webhook-Signature")
-    is_sig_valid_mock = await verify_third_party_webhook_signature_placeholder(request, x_sig)
-    if not is_sig_valid_mock and x_sig: # Only fail if signature was provided and was "invalid" by mock logic
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature (mock check).")
-
-
-    raw_body = await request.body()
+    db: Session = next(db_session_creator()) # Create a new session for this task
     try:
-        payload_dict = json.loads(raw_body.decode('utf-8'))
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload from webhook.")
+        webhook_log = webhook_event_log_service.get_webhook_log_by_id(db, log_id)
+        if not webhook_log or webhook_log.processing_status != models.WebhookProcessingStatusEnum.PENDING:
+            print(f"Webhook log {log_id} not found or not pending, skipping background processing.")
+            return
 
-    # Log the raw event (conceptual, real logging might be in service)
-    # log_entry = models.ThirdPartyAPILog(
-    #     service_name=service_name, direction=models.TPAPILogDirectionEnum.INCOMING,
-    #     endpoint_url=str(request.url), http_method="POST",
-    #     request_payload=raw_body.decode('utf-8'), request_headers=json.dumps(dict(request.headers)),
-    #     status=models.TPAPILogStatusEnum.PENDING # Initial status before processing
-    # )
-    # db.add(log_entry); db.commit(); db.refresh(log_entry)
+        webhook_event_log_service.update_webhook_log_processing(db, log_id, models.WebhookProcessingStatusEnum.PROCESSING)
 
-    # Delegate to a specific service handler based on service_name and event type in payload
-    # E.g., if service_name == CREDIT_BUREAU_CRC and payload_dict.get("event_type") == "REPORT_READY":
-    #    services.handle_crc_report_ready_webhook(db, payload_dict, log_entry.id)
-    # elif service_name == EXTERNAL_LOAN_ORIGINATOR_Y and payload_dict.get("event_type") == "APPLICATION_STATUS_UPDATE":
-    #    services.handle_loan_originator_status_update_webhook(db, payload_dict, log_entry.id)
+        # Simulate processing based on source_service_name and event_type
+        print(f"BACKGROUND PROCESSING Webhook ID: {log_id}, Service: {webhook_log.source_service_name}, Event: {webhook_log.event_type}")
+        # Example:
+        # if webhook_log.source_service_name == "PAYSTACK_PAYMENTS":
+        #     if webhook_log.event_type == "charge.success":
+        #         # Call payment_service.handle_paystack_charge_success(json.loads(webhook_log.raw_payload))
+        #         pass
+        #     # ... other Paystack events
+        # elif webhook_log.source_service_name == "NIBSS_NIP":
+        #     # Call transaction_service.handle_nip_notification(json.loads(webhook_log.raw_payload))
+        #     pass
 
-    # For this placeholder:
-    # print(f"Webhook received for {service_name.value}: {payload_dict}")
-    # Update log_entry status to PROCESSED or FAILED based on handler outcome.
+        # Simulate some work
+        await asyncio.sleep(2) # Requires `import asyncio`
 
-    return {"message": f"Webhook for {service_name.value} received and acknowledged."}
+        # Update status after processing
+        webhook_event_log_service.update_webhook_log_processing(
+            db, log_id, models.WebhookProcessingStatusEnum.PROCESSED_SUCCESS,
+            notes="Processed successfully in background.",
+            related_ref_id=webhook_log.related_internal_reference_id # Preserve or update
+        )
+        print(f"BACKGROUND PROCESSING COMPLETED for Webhook ID: {log_id}")
 
-
-# --- Endpoints for specific integrations (if bank initiates calls and needs an API for it) ---
-# Example: Requesting a credit report (usually called by Loan Module service, but can be exposed)
-@router.post("/credit-bureaus/request-report", response_model=schemas.CreditReportResponseSchema)
-def request_credit_bureau_report(
-    request_data: schemas.CreditReportRequestSchema,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_active_admin_user) # Or loan officer role
-):
-    """Request a credit report from a specified bureau for a BVN. (Internal/Authorized User)"""
-    if db is None: raise HTTPException(status_code=503, detail="Database not configured for API.")
-    user_id_str = str(current_user.get("id"))
-    try:
-        return services.get_credit_report(db, request_data, user_id_str)
-    except ValueError as e: # For invalid bureau name
-        raise HTTPException(status_code=400, detail=str(e))
-    except services.ConfigurationException as e:
-        raise HTTPException(status_code=503, detail=f"Service configuration error: {str(e)}")
-    except services.ExternalServiceException as e: # If bureau call fails with HTTP or known API error
-        # The service.get_credit_report already returns a specific schema for this,
-        # so the API can just return that. If it raises, then it's unexpected.
-        raise HTTPException(status_code=502, detail=f"Credit bureau service error: {str(e)}")
     except Exception as e:
-        # Log e
-        raise HTTPException(status_code=500, detail=f"Unexpected error requesting credit report: {str(e)}")
+        print(f"ERROR in background processing webhook {log_id}: {str(e)}")
+        webhook_event_log_service.update_webhook_log_processing(
+            db, log_id, models.WebhookProcessingStatusEnum.ERROR_PROCESSING,
+            notes=f"Error during background processing: {str(e)}"
+        )
+    finally:
+        db.close()
 
-# Example: Receiving a loan application from an external originator (partner uses this endpoint)
-@router.post("/external-loan-applications/submit", response_model=schemas.ExternalLoanApplicationReceiveResponse)
-async def submit_loan_application_from_partner(
-    app_submission: schemas.ExternalLoanApplicationReceiveRequest,
-    # auth: bool = Depends(verify_partner_api_key_for_originator(app_submission.originator_name)) # Specific auth per partner
+
+@webhooks_receiver_router.post("/{source_service_name}", status_code=status.HTTP_202_ACCEPTED)
+async def receive_webhook_endpoint(
+    source_service_name: str,
+    request: Request, # To get raw body, headers, IP
+    background_tasks: BackgroundTasks, # For async processing
+    db: Session = Depends(get_db),
+    # Signature headers vary by provider, e.g., X-Paystack-Signature, X-Flutterwave-Signature
+    # These need to be explicitly declared or accessed from request.headers
+    # x_paystack_signature: Optional[str] = Header(None, alias="X-Paystack-Signature"),
+    # x_flutterwave_signature: Optional[str] = Header(None, alias="X-Flutterwave-Signature"),
+    # ... add others as needed
+):
+    raw_body_bytes = await request.body()
+    headers = dict(request.headers)
+    source_ip = request.client.host if request.client else "Unknown IP"
+
+    # Try to parse event_type from payload (common patterns)
+    event_type: Optional[str] = None
+    try:
+        payload_json = json.loads(raw_body_bytes.decode('utf-8'))
+        event_type = payload_json.get("event") or payload_json.get("event_type") or payload_json.get("type")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload_json = None # Not JSON or decode error
+
+    # Log the incoming webhook first
+    log_entry = webhook_event_log_service.log_incoming_webhook(
+        db, source_service_name=source_service_name, raw_payload=raw_body_bytes,
+        request_headers=headers, source_ip=source_ip, event_type=event_type
+    )
+
+    # Signature Verification (Conceptual)
+    is_verified = None # Null if not applicable or check fails before attempting
+    api_config = api_service_config_service.get_config_by_service_name(db, source_service_name, active_only=True)
+
+    # Example for Paystack, assuming header is X-Paystack-Signature
+    paystack_sig = headers.get("x-paystack-signature") # Case-insensitive get from dict
+    if api_config and source_service_name.upper() == "PAYSTACK_PAYMENTS" and paystack_sig:
+        is_verified = webhook_event_log_service.verify_webhook_signature(
+            api_config, raw_body_bytes, paystack_sig, source_service_name
+        )
+        if not is_verified:
+            webhook_event_log_service.update_webhook_log_processing(
+                db, log_entry.id, models.WebhookProcessingStatusEnum.FAILED_VALIDATION,
+                notes="Signature verification failed.", is_signature_verified=False
+            )
+            # Depending on policy, might raise 400 or just log and not process further
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Webhook signature verification failed.")
+
+    # Update log with verification status if checked
+    if is_verified is not None:
+         webhook_event_log_service.update_webhook_log_processing(db, log_entry.id, is_signature_verified=is_verified, status=log_entry.processing_status) # Keep PENDING if verified
+
+    # Add to background tasks for actual processing
+    # Pass get_db to the background task so it can create its own session
+    # background_tasks.add_task(process_webhook_event_background, log_entry.id, get_db)
+
+    # For now, synchronous conceptual processing:
+    print(f"Webhook from {source_service_name} (Log ID: {log_entry.id}) received. Payload: {raw_body_bytes[:200]}...")
+    # In a real app, this is where you'd dispatch to a handler based on source_service_name and event_type
+    # e.g., if source_service_name == "PAYSTACK": payments_module.handle_paystack_webhook(log_entry, payload_json)
+    # For now, just mark as PROCESSED_SUCCESS conceptually if signature was okay or not required.
+    if is_verified or not api_config or not paystack_sig : # If verified, or no means to verify
+        webhook_event_log_service.update_webhook_log_processing(
+            db, log_entry.id, models.WebhookProcessingStatusEnum.PROCESSED_SUCCESS,
+            notes="Conceptually processed (actual business logic would run async).",
+            is_signature_verified=is_verified
+        )
+
+    return {"message": "Webhook received and logged.", "log_id": log_entry.id}
+
+
+# --- WebhookEventLog Admin Endpoints ---
+admin_webhook_logs_router = APIRouter(
+    prefix="/admin/webhook-event-logs",
+    tags=["Admin: Webhook Event Logs (Incoming)"],
+    dependencies=[Depends(get_current_active_superuser)]
+)
+
+@admin_webhook_logs_router.get("/", response_model=schemas.PaginatedWebhookEventLogResponse)
+async def list_webhook_event_logs_endpoint(
+    source_service_name: Optional[str] = None,
+    event_type: Optional[str] = None,
+    processing_status: Optional[models.WebhookProcessingStatusEnum] = None,
+    skip: int = 0, limit: int = 20,
     db: Session = Depends(get_db)
 ):
-    """Endpoint for external loan originators/partners to submit loan applications."""
-    if db is None: raise HTTPException(status_code=503, detail="Database not configured for API.")
+    logs, total = webhook_event_log_service.get_webhook_logs(
+        db, source_service_name=source_service_name, event_type=event_type,
+        processing_status=processing_status, skip=skip, limit=limit
+    )
+    # Attempt to parse raw_payload as JSON for response if it's likely JSON
+    augmented_logs = []
+    for log_orm in logs:
+        log_schema = schemas.WebhookEventLogResponse.from_orm(log_orm).dict()
+        try:
+            log_schema["raw_payload_parsed"] = json.loads(log_orm.raw_payload)
+        except (json.JSONDecodeError, TypeError):
+            log_schema["raw_payload_parsed"] = log_orm.raw_payload # Keep as string if not valid JSON
+        augmented_logs.append(log_schema)
+
+    return {"items": augmented_logs, "total": total, "page": (skip // limit) + 1, "size": limit}
+
+
+@admin_webhook_logs_router.get("/{log_id}", response_model=schemas.WebhookEventLogResponse)
+async def read_webhook_event_log_endpoint(log_id: int, db: Session = Depends(get_db)):
+    db_log = webhook_event_log_service.get_webhook_log_by_id(db, log_id)
+    if not db_log:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook Event Log not found")
+
+    log_schema = schemas.WebhookEventLogResponse.from_orm(db_log).dict()
     try:
-        return services.receive_external_loan_application(db, app_submission)
-    except services.DataMappingException as e:
-        raise HTTPException(status_code=400, detail=f"Invalid application payload: {str(e)}")
-    except services.ConfigurationException as e: # If originator not configured
-        raise HTTPException(status_code=403, detail=f"Originator not recognized or configured: {str(e)}")
+        log_schema["raw_payload_parsed"] = json.loads(db_log.raw_payload)
+    except (json.JSONDecodeError, TypeError):
+        log_schema["raw_payload_parsed"] = db_log.raw_payload
+    return log_schema
 
 
-# Most other interactions with third parties (NIMC, Bill Aggregators) would be:
-# 1. Service functions in this module's `services.py`.
-# 2. Called by other core CBS modules' services (e.g., CustomerIdentity calls NIMC service, TransactionManagement calls Bill Aggregator service).
-# 3. Direct API endpoints here would be less common, mainly for admin or webhook purposes.
+@admin_webhook_logs_router.put("/{log_id}/status", response_model=schemas.WebhookEventLogResponse)
+async def update_webhook_log_status_endpoint(
+    log_id: int,
+    update_request: schemas.WebhookProcessingUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: CoreUser = Depends(get_current_active_superuser) # Ensure admin action
+):
+    # Admin manually updating status or notes.
+    updated_log = webhook_event_log_service.update_webhook_log_processing(
+        db, log_id=log_id, status=update_request.processing_status,
+        notes=f"Admin update by {current_user.username}: {update_request.processing_notes_or_error or ''}"
+    )
+    if not updated_log:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Webhook Event Log not found")
 
-# Import json for webhook payload parsing if not already at top
-import json
-# Import datetime for model fields if not already at top
-from datetime import datetime
+    log_schema = schemas.WebhookEventLogResponse.from_orm(updated_log).dict()
+    try:
+        log_schema["raw_payload_parsed"] = json.loads(updated_log.raw_payload)
+    except (json.JSONDecodeError, TypeError):
+        log_schema["raw_payload_parsed"] = updated_log.raw_payload
+    return log_schema
+
+
+# Add sub-routers to the main integrations_api_router
+integrations_api_router.include_router(admin_configs_router)
+integrations_api_router.include_router(admin_ext_logs_router)
+integrations_api_router.include_router(webhooks_receiver_router) # This is the public-facing webhook receiver
+integrations_api_router.include_router(admin_webhook_logs_router)
+
+
+# The main app would then do:
+# from weezy_cbs.third_party_fintech_integration.api import integrations_api_router
+# app.include_router(integrations_api_router)

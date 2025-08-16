@@ -1,57 +1,61 @@
 # Database models for Payments Integration Layer (if any)
 from sqlalchemy import Column, Integer, String, DateTime, Text, Enum as SQLAlchemyEnum, ForeignKey, Boolean
 from sqlalchemy.sql import func
-# from weezy_cbs.database import Base
-from sqlalchemy.ext.declarative import declarative_base
-Base = declarative_base() # Local Base for now
+from weezy_cbs.database import Base # Use the shared Base
 
 import enum
+
+# Assuming CurrencyEnum will be shared, for now define locally or import if available
+# from weezy_cbs.accounts_ledger_management.models import CurrencyEnum as SharedCurrencyEnum
+class CurrencyEnum(enum.Enum):
+    NGN = "NGN"
+    USD = "USD"
+    # Add other relevant currencies
 
 class PaymentGatewayEnum(enum.Enum):
     PAYSTACK = "PAYSTACK"
     FLUTTERWAVE = "FLUTTERWAVE"
     MONNIFY = "MONNIFY"
     REMITA = "REMITA"
-    INTERSWITCH = "INTERSWITCH_WEB" # For WebPay, Quickteller etc.
+    INTERSWITCH_WEB = "INTERSWITCH_WEB"
     NIBSS_EBILLSPAY = "NIBSS_EBILLSPAY"
-    NQR = "NQR" # NIBSS QR
-    # Add others like specific Telco airtime aggregators (VeedezPay was an example)
+    NQR = "NQR"
+    # Add others
 
 class APILogDirectionEnum(enum.Enum):
-    OUTGOING = "OUTGOING" # Request sent from our system
-    INCOMING = "INCOMING" # Request received by our system (e.g. webhook callback)
+    OUTGOING = "OUTGOING"
+    INCOMING = "INCOMING"
 
 class APILogStatusEnum(enum.Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
-    PENDING = "PENDING" # For async responses
+    PENDING = "PENDING"
 
-# Log of API calls made to/from external payment services
 class PaymentAPILog(Base):
     __tablename__ = "payment_api_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    # financial_transaction_id = Column(String, ForeignKey("financial_transactions.id"), nullable=True, index=True) # Link to master FT if applicable
-    external_reference = Column(String, index=True, nullable=True) # Reference from the external gateway
-    internal_reference = Column(String, index=True, nullable=True) # Our internal reference for the call
+    financial_transaction_id = Column(String(40), ForeignKey("financial_transactions.id"), nullable=True, index=True)
+    external_reference = Column(String(100), index=True, nullable=True)
+    internal_reference = Column(String(100), index=True, nullable=True)
 
     gateway = Column(SQLAlchemyEnum(PaymentGatewayEnum), nullable=False, index=True)
-    endpoint_url = Column(String, nullable=False)
-    http_method = Column(String(10), nullable=False) # GET, POST, PUT etc.
+    endpoint_url = Column(String(512), nullable=False)
+    http_method = Column(String(10), nullable=False)
 
-    direction = Column(SQLAlchemyEnum(APILogDirectionEnum), nullable=False) # OUTGOING or INCOMING (webhook)
+    direction = Column(SQLAlchemyEnum(APILogDirectionEnum), nullable=False)
 
-    request_headers = Column(Text, nullable=True) # Store sanitized headers
-    request_payload = Column(Text, nullable=True) # Store sanitized payload
+    request_headers = Column(Text, nullable=True)
+    request_payload = Column(Text, nullable=True)
 
     response_status_code = Column(Integer, nullable=True)
-    response_headers = Column(Text, nullable=True) # Store sanitized headers
-    response_payload = Column(Text, nullable=True) # Store sanitized payload
+    response_headers = Column(Text, nullable=True)
+    response_payload = Column(Text, nullable=True)
 
     status = Column(SQLAlchemyEnum(APILogStatusEnum), nullable=False)
-    error_message = Column(Text, nullable=True) # If call failed
+    error_message = Column(Text, nullable=True)
 
-    duration_ms = Column(Integer, nullable=True) # How long the call took
+    duration_ms = Column(Integer, nullable=True)
 
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -63,35 +67,35 @@ class PaymentGatewayConfig(Base):
     id = Column(Integer, primary_key=True, index=True)
     gateway = Column(SQLAlchemyEnum(PaymentGatewayEnum), nullable=False, unique=True)
 
-    # Store encrypted credentials or references to a secure vault
-    api_key_encrypted = Column(String, nullable=True)
-    secret_key_encrypted = Column(String, nullable=True)
-    public_key_encrypted = Column(String, nullable=True) # For gateways like Flutterwave
+    api_key_encrypted = Column(String(512), nullable=True)
+    secret_key_encrypted = Column(String(512), nullable=True)
+    public_key_encrypted = Column(String(512), nullable=True)
+    webhook_secret_key_encrypted = Column(String(512), nullable=True) # For verifying incoming webhooks
 
-    base_url = Column(String, nullable=False)
-    # Other specific config fields like merchant_id, callback_url_template etc.
-    merchant_id = Column(String, nullable=True)
+    base_url = Column(String(255), nullable=False)
+    merchant_id = Column(String(100), nullable=True)
+    additional_headers_json = Column(Text, nullable=True) # JSON: {"X-Custom-Header": "value"}
 
     is_active = Column(Boolean, default=True)
-    last_updated = Column(DateTime(timezone=True), onupdate=func.now())
+    last_updated = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     def __repr__(self):
         return f"<PaymentGatewayConfig(gateway='{self.gateway.value}', active={self.is_active})>"
 
-class WebhookEventLog(Base): # For incoming webhook events from payment gateways
+class WebhookEventLog(Base):
     __tablename__ = "webhook_event_logs"
     id = Column(Integer, primary_key=True, index=True)
     gateway = Column(SQLAlchemyEnum(PaymentGatewayEnum), nullable=False, index=True)
-    event_type = Column(String, index=True) # e.g., 'charge.success', 'transfer.failed' (gateway specific)
-    event_id_external = Column(String, index=True, nullable=True) # Event ID from the gateway
+    event_type = Column(String(100), index=True)
+    event_id_external = Column(String(100), index=True, nullable=True)
 
-    payload_received = Column(Text) # Full JSON payload
-    headers_received = Column(Text) # Relevant headers (e.g., for signature verification)
+    payload_received = Column(Text, nullable=False)
+    headers_received = Column(Text, nullable=True)
 
-    processing_status = Column(String, default="PENDING") # PENDING, PROCESSED, FAILED_VALIDATION, ERROR_PROCESSING
+    processing_status = Column(String(30), default="PENDING", index=True)
     processing_notes = Column(Text, nullable=True)
 
-    # financial_transaction_id = Column(String, ForeignKey("financial_transactions.id"), nullable=True, index=True) # If successfully linked to an FT
+    financial_transaction_id = Column(String(40), ForeignKey("financial_transactions.id"), nullable=True, index=True)
 
     received_at = Column(DateTime(timezone=True), server_default=func.now())
     processed_at = Column(DateTime(timezone=True), nullable=True)
@@ -99,34 +103,29 @@ class WebhookEventLog(Base): # For incoming webhook events from payment gateways
     def __repr__(self):
         return f"<WebhookEventLog(id={self.id}, gateway='{self.gateway.value}', event='{self.event_type}')>"
 
-# PaymentLink Management (if the bank generates its own payment links)
 class PaymentLink(Base):
     __tablename__ = "payment_links"
     id = Column(Integer, primary_key=True, index=True)
-    link_reference = Column(String, unique=True, index=True, nullable=False) # Unique, shareable part of the URL
-    # customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True) # If generated by a specific customer/merchant
-    # account_to_credit_id = Column(Integer, ForeignKey("accounts.id"), nullable=False) # Account that receives funds
+    link_reference = Column(String(50), unique=True, index=True, nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True, index=True)
+    account_to_credit_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
 
-    amount = Column(Numeric(precision=18, scale=2), nullable=False) # Fixed amount for the link
+    amount = Column(Numeric(precision=18, scale=2), nullable=False)
     currency = Column(SQLAlchemyEnum(CurrencyEnum), nullable=False)
-    description = Column(String, nullable=True)
+    description = Column(String(255), nullable=True)
 
-    is_reusable = Column(Boolean, default=False) # If false, can only be paid once
-    max_usage_count = Column(Integer, nullable=True) # If reusable, how many times
+    is_reusable = Column(Boolean, default=False)
+    max_usage_count = Column(Integer, nullable=True)
     current_usage_count = Column(Integer, default=0)
 
-    status = Column(String, default="ACTIVE") # ACTIVE, INACTIVE, PAID (if not reusable), EXPIRED
+    status = Column(String(20), default="ACTIVE", index=True)
     expiry_date = Column(DateTime(timezone=True), nullable=True)
 
-    # Callback URL for this specific link if different from global config
-    # custom_callback_url = Column(String, nullable=True)
-
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    # financial_transaction_ids = Column(Text, nullable=True) # Store JSON array of successful FT IDs if multiple payments allowed
+    # financial_transaction_ids_json = Column(Text, nullable=True) # Storing multiple FT IDs if link is reusable
+
+    customer = relationship("Customer") # Add back_populates in Customer model
+    account_to_credit = relationship("Account") # Add back_populates in Account model
 
     def __repr__(self):
         return f"<PaymentLink(ref='{self.link_reference}', amount='{self.amount} {self.currency.value}')>"
-
-# This module primarily defines how to interact with external services.
-# Models here are mostly for logging, configuration, or managing artifacts like payment links.
-# The core logic resides in 'services.py' which would contain clients for each gateway.

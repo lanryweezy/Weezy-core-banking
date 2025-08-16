@@ -3,58 +3,74 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 import decimal
+import enum # For Pydantic enums
 
-from .models import FeeTypeEnum, FeeCalculationMethodEnum, CurrencyEnum # Import enums
+# Import enums from models to ensure consistency
+from .models import (
+    FeeTypeEnum as ModelFeeTypeEnum,
+    FeeCalculationMethodEnum as ModelFeeCalculationMethodEnum,
+    CurrencyEnum as ModelCurrencyEnum
+)
+
+# Schema Enums
+class CurrencySchema(str, enum.Enum): # Replicated for independence
+    NGN = "NGN"; USD = "USD"
+
+class FeeTypeSchema(str, enum.Enum):
+    TRANSACTION_FEE = "TRANSACTION_FEE"; SERVICE_CHARGE = "SERVICE_CHARGE"
+    COMMISSION = "COMMISSION"; PENALTY = "PENALTY"; TAX = "TAX"
+    GOVERNMENT_LEVY = "GOVERNMENT_LEVY"
+
+class FeeCalculationMethodSchema(str, enum.Enum):
+    FLAT = "FLAT"; PERCENTAGE = "PERCENTAGE"
+    TIERED_FLAT = "TIERED_FLAT"; TIERED_PERCENTAGE = "TIERED_PERCENTAGE"
 
 # --- FeeConfig Schemas (Admin/Setup) ---
-class FeeTierSchema(BaseModel): # For TIERED_FLAT or TIERED_PERCENTAGE
-    min_amount: decimal.Decimal = Field(..., ge=0)
-    max_amount: Optional[decimal.Decimal] = Field(None, ge=0) # Null for last tier's max
-    fee_or_rate: decimal.Decimal = Field(..., ge=0) # Actual fee for TIERED_FLAT, rate for TIERED_PERCENTAGE
+class FeeTierSchema(BaseModel):
+    min_transaction_amount: decimal.Decimal = Field(..., ge=0, decimal_places=2) # Renamed
+    max_transaction_amount: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=2) # Renamed
+    value: decimal.Decimal = Field(..., ge=0) # Renamed from fee_or_rate, can be amount or rate
 
-    @validator('max_amount')
-    def max_must_be_gt_min(cls, v, values):
-        if v is not None and 'min_amount' in values and v < values['min_amount']:
-            raise ValueError('max_amount in tier must be greater than or equal to min_amount')
+    @validator('max_transaction_amount')
+    def _max_must_be_gt_min(cls, v, values): # Renamed validator
+        if v is not None and 'min_transaction_amount' in values and v < values['min_transaction_amount']:
+            raise ValueError('max_transaction_amount in tier must be >= min_transaction_amount')
         return v
 
 class FeeConfigBase(BaseModel):
     fee_code: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Z0-9_]+$")
-    description: str
-    fee_type: FeeTypeEnum
-    # applicable_context_json: Optional[Dict[str, Any]] = Field({}, description="JSON defining when this fee applies")
-    calculation_method: FeeCalculationMethodEnum
+    description: str = Field(..., max_length=255)
+    fee_type: FeeTypeSchema # Use schema enum
+    applicable_context_json: Optional[Dict[str, Any]] = Field({}, description="JSON defining when this fee applies")
+    calculation_method: FeeCalculationMethodSchema # Use schema enum
     flat_amount: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=2)
-    percentage_rate: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=6, description="e.g., 0.005 for 0.5%") # Allow more precision for rates
-    tiers_json: Optional[List[FeeTierSchema]] = Field(None, min_items=1) # List of tier definitions
-    currency: CurrencyEnum
-    # fee_income_gl_code: str
-    # tax_payable_gl_code: Optional[str] = None
+    percentage_rate: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=6)
+    tiers_json: Optional[List[FeeTierSchema]] = Field(None, min_items=1)
+    currency: CurrencySchema # Use schema enum
+    fee_income_gl_code: str = Field(..., max_length=20)
+    tax_payable_gl_code: Optional[str] = Field(None, max_length=20)
+    linked_tax_fee_code: Optional[str] = Field(None, max_length=50)
     is_active: bool = True
-    valid_from: Optional[date] = None # Defaults to today if not provided
+    valid_from: Optional[date] = Field(default_factory=date.today) # Default to today
     valid_to: Optional[date] = None
 
+    # Validators refined to use updated field names and check method consistency
     @validator('flat_amount', always=True)
-    def validate_flat_amount(cls, v, values):
-        if values.get('calculation_method') == FeeCalculationMethodEnum.FLAT and v is None:
-            raise ValueError('flat_amount is required for FLAT calculation method')
+    def _validate_flat_amount(cls, v, values):
+        if values.get('calculation_method') == FeeCalculationMethodSchema.FLAT and v is None:
+            raise ValueError('flat_amount is required for FLAT method')
         return v
-
     @validator('percentage_rate', always=True)
-    def validate_percentage_rate(cls, v, values):
-        if values.get('calculation_method') == FeeCalculationMethodEnum.PERCENTAGE and v is None:
-            raise ValueError('percentage_rate is required for PERCENTAGE calculation method')
+    def _validate_percentage_rate(cls, v, values):
+        if values.get('calculation_method') == FeeCalculationMethodSchema.PERCENTAGE and v is None:
+            raise ValueError('percentage_rate is required for PERCENTAGE method')
         return v
-
     @validator('tiers_json', always=True)
-    def validate_tiers_json(cls, v, values):
+    def _validate_tiers_json(cls, v, values):
         method = values.get('calculation_method')
-        if method in [FeeCalculationMethodEnum.TIERED_FLAT, FeeCalculationMethodEnum.TIERED_PERCENTAGE] and not v:
-            raise ValueError('tiers_json is required for TIERED calculation methods')
-        if v: # Further validation for tiers (e.g., non-overlapping, sorted) can be added
-            # Ensure max_amount of a tier is not less than min_amount
-            # Ensure min_amount of next tier starts after max_amount of previous (or is contiguous)
-            pass
+        if method in [FeeCalculationMethodSchema.TIERED_FLAT, FeeCalculationMethodSchema.TIERED_PERCENTAGE] and not v:
+            raise ValueError('tiers_json is required for TIERED methods')
+        # TODO: Add validation for tier consistency (non-overlapping, sorted ranges)
         return v
 
 class FeeConfigCreateRequest(FeeConfigBase):
@@ -62,116 +78,100 @@ class FeeConfigCreateRequest(FeeConfigBase):
 
 class FeeConfigResponse(FeeConfigBase):
     id: int
-    # applicable_context_json: Dict[str, Any] # Already in base, will be parsed from Text by Pydantic
-    # tiers_json: Optional[List[FeeTierSchema]] # Already in base, parsed from Text
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
+    # created_by_user_id: Optional[str] = None # Add if exposing
+    # updated_by_user_id: Optional[str] = None
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- AppliedFeeLog Schemas ---
 class AppliedFeeLogResponse(BaseModel):
     id: int
-    fee_code_applied: str
-    source_transaction_reference: Optional[str] = None
-    customer_bvn_or_id: Optional[str] = None
-    account_number_debited: Optional[str] = None
-    base_amount_for_calc: Optional[decimal.Decimal] = None
-    calculated_fee_amount: decimal.Decimal
-    # calculated_tax_amount: Optional[decimal.Decimal] = None
-    # total_charged_amount: decimal.Decimal
-    currency: CurrencyEnum
-    status: str
-    # fee_ledger_tx_id: Optional[str] = None
-    # tax_ledger_tx_id: Optional[str] = None
+    fee_config_id: int
+    fee_code_applied: str = Field(..., max_length=50)
+    financial_transaction_id: str = Field(..., max_length=40)
+    customer_id: Optional[int] = None
+    account_id: Optional[int] = None
+    source_transaction_reference: Optional[str] = Field(None, max_length=100)
+    base_amount_for_calc: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    original_calculated_fee: decimal.Decimal = Field(..., decimal_places=2)
+    net_fee_charged: decimal.Decimal = Field(..., decimal_places=2)
+    tax_amount_on_fee: Optional[decimal.Decimal] = Field(decimal.Decimal("0.00"), decimal_places=2)
+    total_charged_to_customer: decimal.Decimal = Field(..., decimal_places=2)
+    currency: CurrencySchema
+    status: str = Field(..., max_length=30)
+    fee_ledger_transaction_id: Optional[str] = Field(None, max_length=40)
+    tax_ledger_transaction_id: Optional[str] = Field(None, max_length=40)
     applied_at: datetime
-    # waiver_id: Optional[int] = None
-
-    class Config:
-        orm_mode = True
-        use_enum_values = True
-        json_encoders = { decimal.Decimal: str }
+    waiver_promo_id: Optional[int] = None
+    class Config: orm_mode = True; use_enum_values = True; json_encoders = {decimal.Decimal: str}
 
 # --- FeeWaiverPromo Schemas (Admin/Setup) ---
 class FeeWaiverPromoBase(BaseModel):
-    promo_code: str = Field(..., min_length=3, pattern=r"^[A-Z0-9_]+$")
+    promo_code: str = Field(..., min_length=3, max_length=30, pattern=r"^[A-Z0-9_]+$")
     description: str
-    # fee_code_to_waive: Optional[str] = None # Specific fee code
-    # applicable_criteria_json: Optional[Dict[str, Any]] = Field({}, description="Criteria for waiver applicability")
-    waiver_type: str = "FULL_WAIVER" # FULL_WAIVER, PERCENTAGE_DISCOUNT, FIXED_AMOUNT_DISCOUNT
+    fee_config_id: Optional[int] = None # Link to specific FeeConfig.id
+    # applicable_criteria_json: Optional[Dict[str, Any]] = Field({})
+    waiver_type: str = Field("FULL_WAIVER", max_length=30) # Consider Enum
     discount_percentage: Optional[decimal.Decimal] = Field(None, ge=0, le=100, decimal_places=2)
     discount_fixed_amount: Optional[decimal.Decimal] = Field(None, ge=0, decimal_places=2)
     is_active: bool = True
     start_date: datetime
     end_date: datetime
-    # max_waivers_total: Optional[int] = Field(None, gt=0)
-    # max_waivers_per_customer: Optional[int] = Field(None, gt=0)
+    max_waivers_total_limit: Optional[int] = Field(None, gt=0) # Renamed
+    max_waivers_per_customer_limit: Optional[int] = Field(None, gt=0) # Renamed
 
 class FeeWaiverPromoCreateRequest(FeeWaiverPromoBase):
     pass
 
 class FeeWaiverPromoResponse(FeeWaiverPromoBase):
     id: int
-    # current_waivers_total_count: int
+    current_waivers_total_count: int
     created_at: datetime
+    updated_at: Optional[datetime] = None
+    # created_by_user_id: Optional[str] = None
+    # updated_by_user_id: Optional[str] = None
+    class Config: orm_mode = True; json_encoders = {decimal.Decimal: str}
 
-    class Config:
-        orm_mode = True
-        json_encoders = { decimal.Decimal: str }
-
-
-# --- Fee Calculation Request/Response (Conceptual for a fee calculation endpoint) ---
-class FeeCalculationContext(BaseModel): # Data provided to the engine to calculate fees
-    transaction_type: str # e.g., "NIP_TRANSFER", "SMS_NOTIFICATION", "ACCOUNT_MAINTENANCE"
-    transaction_amount: Optional[decimal.Decimal] = None # Base amount for percentage fees
-    transaction_currency: CurrencyEnum = CurrencyEnum.NGN
-    # customer_id: Optional[int] = None
-    # account_id: Optional[int] = None
-    # product_code: Optional[str] = None # e.g., for account product specific fees
-    # channel: Optional[str] = None # e.g., "MOBILE_APP", "USSD", "BRANCH"
-    # other_context_params: Optional[Dict[str, Any]] = None # For very specific rules
+# --- Fee Calculation Request/Response ---
+class FeeCalculationContext(BaseModel):
+    transaction_type: str
+    transaction_amount: Optional[decimal.Decimal] = Field(None, decimal_places=2)
+    transaction_currency: CurrencySchema = CurrencySchema.NGN
+    customer_id: Optional[int] = None # Added
+    account_id: Optional[int] = None # Added
+    product_code: Optional[str] = None # Added
+    channel: Optional[str] = None # Added
+    other_context_params: Optional[Dict[str, Any]] = None # Added
 
 class CalculatedFeeDetail(BaseModel):
     fee_code: str
     description: str
-    original_fee_amount: decimal.Decimal
-    # tax_on_fee_amount: Optional[decimal.Decimal] = decimal.Decimal("0.0")
+    gross_fee_amount: decimal.Decimal = Field(..., decimal_places=2) # Renamed
+    tax_amount_on_fee: decimal.Decimal = Field(decimal.Decimal("0.00"), decimal_places=2) # Added
     waiver_applied_promo_code: Optional[str] = None
-    discount_amount: Optional[decimal.Decimal] = decimal.Decimal("0.0")
-    net_fee_charged: decimal.Decimal # Original_fee - discount
-    # total_charge_to_customer: decimal.Decimal # net_fee_charged + tax_on_fee_amount
-    currency: CurrencyEnum
-
-    class Config:
-        json_encoders = { decimal.Decimal: str }
+    discount_amount: decimal.Decimal = Field(decimal.Decimal("0.00"), decimal_places=2)
+    final_fee_amount_after_waiver: decimal.Decimal = Field(..., decimal_places=2) # Renamed
+    total_deduction_for_this_item: decimal.Decimal = Field(..., decimal_places=2) # Renamed
+    currency: CurrencySchema
+    class Config: json_encoders = {decimal.Decimal: str}
 
 class FeeCalculationResponse(BaseModel):
     context: FeeCalculationContext
     applicable_fees: List[CalculatedFeeDetail]
-    total_fees_charged: decimal.Decimal # Sum of net_fee_charged for all items
-    # total_taxes_charged: decimal.Decimal # Sum of tax_on_fee_amount
-    # grand_total_deducted: decimal.Decimal # Sum of total_charge_to_customer
+    overall_total_fees_after_waivers: decimal.Decimal = Field(..., decimal_places=2) # Renamed
+    overall_total_taxes: decimal.Decimal = Field(..., decimal_places=2) # Renamed
+    overall_grand_total_deducted: decimal.Decimal = Field(..., decimal_places=2) # Renamed
+    class Config: json_encoders = {decimal.Decimal: str}
 
-    class Config:
-        json_encoders = { decimal.Decimal: str }
-
+# --- Paginated Responses ---
 class PaginatedFeeConfigResponse(BaseModel):
-    items: List[FeeConfigResponse]
-    total: int
-    page: int
-    size: int
+    items: List[FeeConfigResponse]; total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str} # If FeeConfigResponse has Decimals
 
 class PaginatedAppliedFeeLogResponse(BaseModel):
-    items: List[AppliedFeeLogResponse]
-    total: int
-    page: int
-    size: int
+    items: List[AppliedFeeLogResponse]; total: int; page: int; size: int
 
 class PaginatedFeeWaiverPromoResponse(BaseModel):
-    items: List[FeeWaiverPromoResponse]
-    total: int
-    page: int
-    size: int
+    items: List[FeeWaiverPromoResponse]; total: int; page: int; size: int
+    class Config: json_encoders = {decimal.Decimal: str} # If FeeWaiverPromoResponse has Decimals

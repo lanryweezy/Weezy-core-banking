@@ -1,154 +1,326 @@
-# Pydantic schemas for Digital Channels Modules (Shared or Common)
-from pydantic import BaseModel, Field, EmailStr, HttpUrl
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+from pydantic import BaseModel, EmailStr, Field, validator, HttpUrl
+from typing import List, Optional, Dict, Any, Union
+from datetime import datetime, date # Added date
+import json
 
-# --- Digital User/Session Schemas ---
-class DigitalUserLoginRequest(BaseModel):
+from .models import ChannelTypeEnum # Import the enum from models
+
+# --- DigitalUserProfile Schemas ---
+class DigitalUserProfileBase(BaseModel):
+    username: str = Field(..., max_length=100, description="Username for digital channels, could be email or custom ID")
+    is_active: bool = True
+    preferences_json: Optional[Dict[str, Any]] = Field(None, description="User preferences like language, theme")
+    notification_settings_json: Optional[Dict[str, Any]] = Field(None, description="Notification preferences per type/channel")
+
+    @validator('preferences_json', 'notification_settings_json', pre=True)
+    def parse_json_string_if_needed(cls, value):
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                raise ValueError("Invalid JSON string for JSON fields")
+        return value
+
+class DigitalUserProfileCreate(DigitalUserProfileBase):
+    password: str = Field(..., min_length=8)
+    customer_id: int
+    security_question_1: Optional[str] = Field(None, max_length=255)
+    security_answer_1: Optional[str] = Field(None, min_length=3)
+
+class DigitalUserProfileUpdate(BaseModel):
+    username: Optional[str] = Field(None, max_length=100)
+    is_active: Optional[bool] = None
+    preferences_json: Optional[Dict[str, Any]] = None
+    notification_settings_json: Optional[Dict[str, Any]] = None
+    is_verified_email: Optional[bool] = None
+    is_verified_phone: Optional[bool] = None
+    locked_until: Optional[datetime] = None
+
+    @validator('preferences_json', 'notification_settings_json', pre=True)
+    def parse_update_json_string(cls, value):
+        if value is None: return None
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                raise ValueError("Invalid JSON string for JSON fields")
+        return value
+
+class DigitalUserProfileResponse(DigitalUserProfileBase):
+    id: int
+    customer_id: int
+    is_verified_email: bool
+    is_verified_phone: bool
+    last_login_channel: Optional[ChannelTypeEnum] = None
+    last_login_at: Optional[datetime] = None
+    last_login_ip: Optional[str] = None
+    failed_login_attempts: int
+    locked_until: Optional[datetime] = None
+    is_transaction_pin_set: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+        use_enum_values = True
+
+
+class DigitalUserPasswordChangeSchema(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+class DigitalUserTransactionPinSetSchema(BaseModel):
+    password: str
+    new_pin: str = Field(..., min_length=4, max_length=6, regex=r"^\d{4,6}$")
+
+class DigitalUserTransactionPinChangeSchema(BaseModel):
+    current_pin: str = Field(..., min_length=4, max_length=6, regex=r"^\d{4,6}$")
+    new_pin: str = Field(..., min_length=4, max_length=6, regex=r"^\d{4,6}$")
+    password: Optional[str] = None
+
+class DigitalUserLoginSchema(BaseModel):
     username: str
     password: str
-    channel: str # "WEB_BANKING", "MOBILE_APP"
-    device_id: Optional[str] = None # For mobile app login
-    # recaptcha_token: Optional[str] = None # For web
+    channel: ChannelTypeEnum
+    device_identifier: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
 
-class DigitalUserLoginResponse(BaseModel):
-    session_id: str # JWT or opaque session token
-    # user_id: int
-    customer_id: int
-    username: str
-    full_name: Optional[str] = None
-    # roles: List[str] # Roles relevant to digital channel access
-    expires_at: datetime
-    # requires_2fa: bool = False
-    # two_fa_channel_options: Optional[List[str]] = None # e.g. ["SMS_OTP", "APP_OTP"]
+class DigitalUserTokenSchema(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_profile: DigitalUserProfileResponse
 
-class DeviceRegistrationRequest(BaseModel):
-    device_id_unique: str
-    device_name: Optional[str] = None
-    device_os: Optional[str] = None
-    app_version: Optional[str] = None
-    fcm_token_or_push_id: Optional[str] = None
+class OTPRequestSchema(BaseModel):
+    identifier: str
+    otp_purpose: str
 
-class DeviceRegistrationResponse(BaseModel):
+class OTPVerifySchema(BaseModel):
+    identifier: str
+    otp_purpose: str
+    otp_code: str = Field(..., min_length=6, max_length=6)
+
+
+# --- RegisteredDevice Schemas ---
+class RegisteredDeviceBase(BaseModel):
+    device_identifier: str = Field(..., max_length=255)
+    device_name: Optional[str] = Field(None, max_length=100)
+    device_os: Optional[str] = Field(None, max_length=50)
+    app_version: Optional[str] = Field(None, max_length=20)
+    push_notification_token: Optional[str] = Field(None, max_length=512)
+
+class RegisteredDeviceCreate(RegisteredDeviceBase):
+    pass
+
+class RegisteredDeviceUpdate(BaseModel):
+    device_name: Optional[str] = Field(None, max_length=100)
+    is_trusted: Optional[bool] = None
+    status: Optional[str] = Field(None, max_length=20)
+    push_notification_token: Optional[str] = Field(None, max_length=512)
+
+
+class RegisteredDeviceResponse(RegisteredDeviceBase):
     id: int
-    device_id_unique: str
-    device_name: Optional[str] = None
+    digital_user_profile_id: int
     is_trusted: bool
-    registered_at: datetime
+    status: str
+    last_login_from_device_at: Optional[datetime] = None
+    registration_date: datetime
+
     class Config:
         orm_mode = True
 
-class OTPRequest(BaseModel):
-    # For generating and sending OTP
-    # customer_id: int # Or username
-    purpose: str # e.g., "LOGIN_2FA", "TRANSACTION_AUTHORIZATION", "PASSWORD_RESET"
-    channel_preference: Optional[str] = "SMS" # SMS, EMAIL
+class DigitalUserProfileWithDevicesResponse(DigitalUserProfileResponse):
+    registered_devices: List[RegisteredDeviceResponse] = []
 
-class OTPResponse(BaseModel):
-    message: str # e.g., "OTP sent successfully to your registered phone/email."
-    # otp_reference_id: Optional[str] = None # If system needs to track OTP attempts
+# --- SessionLog Schemas ---
+class SessionLogResponse(BaseModel):
+    id: int
+    digital_user_profile_id: int
+    channel: ChannelTypeEnum
+    registered_device_id: Optional[int] = None
+    login_time: datetime
+    logout_time: Optional[datetime] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    session_token_jti: Optional[str] = None
+    is_active: bool
 
-class OTPVerifyRequest(BaseModel):
-    # customer_id: int # Or username
-    purpose: str
-    otp_code: str = Field(..., min_length=4, max_length=8)
-    # otp_reference_id: Optional[str] = None
+    class Config:
+        orm_mode = True
+        use_enum_values = True
 
-class OTPVerifyResponse(BaseModel):
-    is_valid: bool
-    message: str
-    # auth_token_for_action: Optional[str] = None # If OTP grants a short-lived token for the intended action
+# --- USSD Schemas ---
+class USSDRequestSchema(BaseModel):
+    sessionId: str
+    msisdn: str
+    serviceCode: str
+    ussdString: Optional[str] = Field(None, description="User's input, empty for initial request")
 
-# --- Notification Schemas ---
-class NotificationPreferenceUpdate(BaseModel):
-    # customer_id: int (usually from path or auth context)
-    # preferred_notification_channel: Optional[str] = None # SMS, EMAIL, PUSH_APP
-    # receive_promotional_emails: Optional[bool] = None
-    # transaction_alert_thresholds: Optional[Dict[str, float]] = None # {"NIP_OUT": 1000, "CARD_TXN": 500}
-    pass # Define specific preferences
+class USSDResponseSchema(BaseModel):
+    response_string: str = Field(..., description="The text to display to the user. Prefix with CON or END.")
+
+class USSDSessionData(BaseModel):
+    current_menu_code: Optional[str] = None
+    language_code: str = "en"
+    amount: Optional[float] = None
+    beneficiary_account: Optional[str] = None
+    pin_attempts: int = 0
+
+class USSDPinVerificationRequest(BaseModel):
+    session_id: str
+    pin: str = Field(..., min_length=4, max_length=4, regex=r"^\d{4}$")
+
+
+# --- NotificationLog Schemas ---
+class NotificationCreateSchema(BaseModel):
+    customer_id: Optional[int] = None
+    digital_user_profile_id: Optional[int] = None
+    recipient_identifier: Optional[str] = Field(None, max_length=255, description="Explicit phone/email if not deriving from profile")
+    channel_type: ChannelTypeEnum
+    message_type: str = Field(..., max_length=50, description="e.g., OTP, TRANSACTION_ALERT, WELCOME_EMAIL")
+    subject: Optional[str] = Field(None, max_length=255)
+    content_params: Optional[Dict[str, Any]] = Field(None, description="Parameters for template-based content generation")
+    direct_content: Optional[str] = Field(None, description="Use if content is not template-based")
+    reference_id: Optional[str] = Field(None, max_length=50)
+
+    @validator('direct_content', always=True)
+    def check_content_or_params_exist(cls, v, values):
+        if not v and not values.get('content_params'):
+            raise ValueError('Either direct_content or content_params must be provided')
+        if v and values.get('content_params'):
+            raise ValueError('Provide either direct_content or content_params, not both')
+        return v
 
 class NotificationLogResponse(BaseModel):
     id: int
-    # customer_id: int
-    channel_sent_via: str
+    customer_id: Optional[int] = None
+    digital_user_profile_id: Optional[int] = None
+    channel_type: ChannelTypeEnum
     recipient_identifier: str
     message_type: Optional[str] = None
+    subject: Optional[str] = None
+    content: str
     status: str
-    sent_at: datetime
-    error_message: Optional[str] = None
+    failure_reason: Optional[str] = None
+    external_message_id: Optional[str] = None
+    sent_at: Optional[datetime] = None
+    created_at: datetime
+    reference_id: Optional[str] = None
 
     class Config:
         orm_mode = True
+        use_enum_values = True
 
-# --- Schemas for specific channel functionalities (examples) ---
-# These would often be wrappers around core CBS module schemas,
-# tailored for the presentation and interaction model of each channel.
+# --- Chatbot Schemas ---
+class ChatbotRequestSchema(BaseModel):
+    session_id: str = Field(..., description="Unique ID for the chat session")
+    user_id: Optional[str] = Field(None, description="Authenticated user ID if available, else anonymous")
+    customer_id: Optional[int] = None
+    message_text: str = Field(..., description="User's message to the chatbot")
+    channel: ChannelTypeEnum = Field(..., description="e.g., WHATSAPP_BOT, WEB_CHAT")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata like language, location if available")
 
-# Example: Account Summary for Web/Mobile
-class DigitalChannelAccountSummary(BaseModel):
-    account_number: str
-    account_type: str # e.g. "Savings Account", "Current Account"
-    available_balance: decimal.Decimal
-    currency: str
-    # account_nickname: Optional[str] = None # User-defined nickname
-
-# Example: Transaction History Item for Web/Mobile
-class DigitalChannelTransactionItem(BaseModel):
-    date: datetime
-    description: str # Narration or custom description
-    amount: decimal.Decimal
-    currency: str
-    transaction_type: str # "DEBIT" or "CREDIT" (simplified)
-    # running_balance: Optional[decimal.Decimal] = None
-
-# Example: Beneficiary Management for Web/Mobile
-class BeneficiaryBase(BaseModel):
-    beneficiary_name: str
-    account_number: str
-    bank_code: str # CBN bank code
-    # bank_name: Optional[str] = None # Can be fetched from bank_code
-    # nickname: Optional[str] = None
-
-class BeneficiaryCreateRequest(BeneficiaryBase):
-    pass
-
-class BeneficiaryResponse(BeneficiaryBase):
-    id: int # Internal ID for the saved beneficiary record
-    # customer_id: int
-    added_at: datetime
-    class Config:
-        orm_mode = True
-
-# --- USSD Specific Schemas (Conceptual) ---
-class USSDRequest(BaseModel):
-    session_id: str # Telco provided session ID
-    phone_number: str # MSISDN
-    ussd_string: str # The full USSD string entered by user, e.g. *123*1*1*Amount#
-    # network_code: Optional[str] = None # e.g. MTN, GLO
-
-class USSDResponse(BaseModel):
+class ChatbotResponseSchema(BaseModel):
     session_id: str
-    message: str # Message to display to user on USSD screen
-    # is_final_response: bool = False # True if session should terminate, False if expecting further input
-    # next_menu_level: Optional[str] = None # If navigating menus
+    bot_response_text: str
+    suggested_actions: Optional[List[str]] = None
+    is_escalated: bool = False
 
-# --- Chatbot Specific Schemas (Conceptual) ---
-class ChatbotMessageRequest(BaseModel):
-    user_id_on_chat_platform: str # e.g. WhatsApp number, Telegram chat ID
-    chat_platform: str # WHATSAPP, TELEGRAM, FACEBOOK_MESSENGER
-    message_text: str
-    # session_id: Optional[str] = None # Ongoing conversation session
+class ChatbotInteractionLogResponse(BaseModel):
+    id: int
+    digital_user_profile_id: Optional[int] = None
+    customer_id: Optional[int] = None
+    session_id: str
+    channel: ChannelTypeEnum
+    user_message: Optional[str] = None
+    bot_response: Optional[str] = None
+    intent_detected: Optional[str] = None
+    entities_extracted_json: Optional[Dict[str, Any]] = None
+    confidence_score: Optional[str] = None
+    timestamp: datetime
+    feedback_rating: Optional[int] = None
+    is_escalated: bool
 
-class ChatbotMessageResponse(BaseModel):
-    reply_text: str
-    # suggested_actions: Optional[List[Dict[str,str]]] = None # e.g. [{"title": "Check Balance", "payload": "CHECK_BAL"}]
-    # is_session_ended: bool = False
+    @validator('entities_extracted_json', pre=True)
+    def parse_json_string_if_needed(cls, value): # Renamed validator
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return {"error": "Invalid JSON string in entities_extracted_json"}
+        return value
 
-# The APIs for each digital channel (InternetBankingAPI, MobileBankingAPI, USSDHandlerAPI)
-# would use these schemas and interact with the service layers of other core modules
-# (Accounts, Transactions, CustomerIdentity, etc.) to fulfill user requests.
-# This schema file is for shared/common elements or high-level concepts.
-# Each sub-module (e.g., `internet_banking`, `mobile_banking`) would have its own more specific schemas.
+    class Config:
+        orm_mode = True
+        use_enum_values = True
 
-# Import decimal for balance fields
-import decimal
+# --- Schemas for Customer Dashboard ---
+class DashboardAccountSummarySchema(BaseModel):
+    account_id: int
+    account_number_masked: str
+    account_type: str
+    available_balance: float
+    currency: str
+    account_nickname: Optional[str] = None
+
+class DashboardTransactionSummarySchema(BaseModel):
+    id: str
+    date: datetime
+    description: str
+    amount: float
+    currency: str
+    transaction_type: str
+    status: str
+
+class DashboardLoanSummarySchema(BaseModel):
+    loan_account_id: int
+    loan_product_name: str
+    outstanding_principal: float
+    outstanding_interest: float
+    total_outstanding: float
+    currency: str
+    next_repayment_date: Optional[date] = None
+    next_repayment_amount: Optional[float] = None
+
+class CustomerDashboardSummaryResponse(BaseModel):
+    welcome_name: str
+    last_login_at: Optional[datetime] = None
+    accounts: List[DashboardAccountSummarySchema] = []
+    recent_transactions: List[DashboardTransactionSummarySchema] = []
+    active_loans: List[DashboardLoanSummarySchema] = []
+    unread_notification_count: int = 0
+
+    class Config:
+        orm_mode = True
+
+# --- Paginated Responses for Digital Channels ---
+class PaginatedDigitalUserProfileResponse(BaseModel):
+    items: List[DigitalUserProfileResponse]
+    total: int
+    page: int
+    size: int
+
+class PaginatedRegisteredDeviceResponse(BaseModel):
+    items: List[RegisteredDeviceResponse]
+    total: int
+    page: int
+    size: int
+
+class PaginatedSessionLogResponse(BaseModel):
+    items: List[SessionLogResponse]
+    total: int
+    page: int
+    size: int
+
+class PaginatedNotificationLogResponse(BaseModel):
+    items: List[NotificationLogResponse]
+    total: int
+    page: int
+    size: int
+
+class PaginatedChatbotInteractionLogResponse(BaseModel):
+    items: List[ChatbotInteractionLogResponse]
+    total: int
+    page: int
+    size: int

@@ -1,73 +1,72 @@
 # FastAPI and related
 fastapi
-uvicorn[standard] # Includes websockets, http-tools, etc.
-pydantic[email] # For email validation in schemas
+uvicorn[standard]
+pydantic[email]
+python-multipart # For form data, file uploads
 
 # SQLAlchemy and DB drivers
 sqlalchemy
-psycopg2-binary # For PostgreSQL. Use 'mysqlclient' for MySQL, etc.
-# For SQLite (often built-in with Python, but good to list if specific version needed or for clarity)
-# sqlite3 (typically not needed to list as it's part of standard library)
+psycopg2-binary # For PostgreSQL
 
 # HTTP client
-requests
+requests # General purpose synchronous HTTP client
+httpx    # For async HTTP requests (used by TestClient and good for service-to-service)
 
 # Date utilities
 python-dateutil
 
-# JWT for session tokens (example)
-PyJWT
+# JWT for authentication tokens
+python-jose[cryptography] # Robust library for JWT, JWS, JWE, JWK
 
-# Password Hashing (example - choose one like passlib or bcrypt)
+# Password Hashing
 passlib[bcrypt]
-# bcrypt
 
-# Data manipulation (especially for agents like reconciliation, finance insights)
-pandas
+# Scheduling (if cron-like features are implemented)
+croniter
 
-# AI/ML libraries (examples, add based on actual model implementations)
-# scikit-learn # For many ML tasks
-# tensorflow # For deep learning
-# torch # For deep learning
-# fbprophet # For time-series forecasting (Finance Insights Agent example) - Note: can have tricky installs
+# Data manipulation (optional, but often useful)
+# pandas
+
+# --- Optional AI/ML and Specific Integration Libraries (Examples) ---
+# Add these based on actual model implementations or third-party SDKs used.
+
+# AI/ML libraries (examples)
+# scikit-learn
+# tensorflow
+# torch
 # transformers # For HuggingFace LLMs
-# sentence-transformers # For text embeddings
+# sentence-transformers
 
-# LLM Orchestration (examples - choose based on agent implementation)
+# LLM Orchestration (examples)
 # crewai
 # langgraph
 # langchain
 # autogen-studio
 
 # For specific integrations (examples)
-# boto3 # For AWS S3, SQS etc.
+# boto3 # For AWS
 # google-cloud-storage # For GCS
-# paystack # Official Paystack Python library (if available and used)
-# flutterwave-python # Official Flutterwave Python library (if available and used)
+# # Add official SDKs for Paystack, Flutterwave, NIBSS if used directly
 
 # Reporting/Templating (examples)
-# Jinja2 # For HTML templates, email templates
+# Jinja2
 # reportlab # For PDF generation
-# openpyxl # For Excel (XLSX) read/write
+# openpyxl # For Excel (XLSX)
 # weasyprint # For HTML/CSS to PDF
 
 # Other utilities
-# python-dotenv # For loading .env files (good practice for local dev)
-# redis # If using Redis for caching, session store, OTP store etc.
+# python-dotenv # For .env files
+# redis # For caching, queues, OTP store
 
-# Linters and Formatters (for development)
+# --- Development & Testing Tools (Typically in a dev-requirements.txt) ---
 # flake8
 # black
 # isort
-# mypy # For type checking
-
-# Testing
+# mypy
 # pytest
 # pytest-cov
-# httpx # For async HTTP requests in tests, or as an alternative to requests
 
-# NOTE: This is a comprehensive list.
-# Only include what's actively being used or planned for immediate use.
-# Some AI/ML libraries can be heavy; consider if they are part of the core application
-# or separate microservices. `fbprophet` in particular can be complex to install.
-# The specific database driver (psycopg2-binary) should match your chosen database.
+# NOTE: This list aims for core functionality based on the refined modules.
+# Commented-out sections are for future consideration or specific deeper implementations.
+# Ensure versions are pinned in a production environment (e.g., fastapi==0.100.0).
+# For now, unpinned versions are used for broader compatibility during development.
