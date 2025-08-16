@@ -1,6 +1,9 @@
 # Tools for Customer Onboarding Agent
 import requests
 from . import config
+from weezy_cbs.customer_identity_management import services as customer_services
+from weezy_cbs.customer_identity_management import schemas as customer_schemas
+from weezy_cbs.database import get_db
 
 def ocr_document(image_path: str) -> dict:
     """
@@ -54,39 +57,27 @@ def verify_face_match(image1_path: str, image2_path: str) -> dict:
         return {"error": str(e), "details": "Unexpected Face Match error"}
 
 
-def verify_bvn_nin(bvn: str = None, nin: str = None) -> dict:
+def verify_bvn_nin(customer_id: int, bvn: str = None, nin: str = None) -> dict:
     """
     Verifies BVN or NIN using the respective verification API.
     Input: BVN (Bank Verification Number) or NIN (National Identity Number).
     Output: Verification result as a dictionary.
     """
-    # This is a placeholder. Implementation depends on NIBSS/CoreID APIs.
-    # Ensure you handle API keys securely.
-    payload = {}
+    db = next(get_db())
     if bvn:
-        payload["bvn"] = bvn
+        try:
+            response = customer_services.verify_bvn(db, customer_id, customer_schemas.BVNVerificationRequest(bvn=bvn), "onboarding_agent")
+            return response.dict()
+        except customer_services.NotFoundException as e:
+            return {"error": str(e), "details": "Customer not found"}
     if nin:
-        payload["nin"] = nin
+        try:
+            response = customer_services.verify_nin(db, customer_id, customer_schemas.NINVerificationRequest(nin=nin), "onboarding_agent")
+            return response.dict()
+        except customer_services.NotFoundException as e:
+            return {"error": str(e), "details": "Customer not found"}
 
-    if not payload:
-        return {"valid": False, "message": "BVN or NIN must be provided."}
-
-    headers = {
-        "Authorization": f"Bearer {config.WEEZY_API_KEY}" # Example, adjust as needed
-    }
-    try:
-        # response = requests.post(config.NIN_BVN_VERIFICATION_API_URL, json=payload, headers=headers)
-        # response.raise_for_status()
-        # return response.json()
-        print(f"Mock call to BVN/NIN Verification API for: {payload}")
-        # Simulate a successful response
-        return {"valid": True, "details": {"name": "Mock User", "dob": "1990-01-01"}, "message": "Mock successful BVN/NIN verification"}
-    except requests.exceptions.RequestException as e:
-        print(f"Error calling BVN/NIN Verification API: {e}")
-        return {"error": str(e), "details": "BVN/NIN API request failed"}
-    except Exception as e:
-        print(f"An unexpected error occurred in verify_bvn_nin: {e}")
-        return {"error": str(e), "details": "Unexpected BVN/NIN verification error"}
+    return {"valid": False, "message": "BVN or NIN must be provided."}
 
 if __name__ == '__main__':
     # Example usage (for testing tools individually)
